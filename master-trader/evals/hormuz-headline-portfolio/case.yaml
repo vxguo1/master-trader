@@ -1,0 +1,13 @@
+schema_version: "1.1"
+name: hormuz-headline-portfolio
+expected_outcome: |
+  A disciplined geopolitical-shock analysis: it treats a single social-feed headline as unconfirmed
+  and says how to verify it, classifies the event (chokepoint / oil-supply escalation) and maps the
+  transmission channels (oil supply and prices, inflation expectations and the Fed's reaction, risk
+  premium/equity multiples, safe-haven flows, sector exposure), checks what markets are pricing
+  (oil, OVX/VIX, yields, dollar/yen, gold) with dated data, uses analog base rates from past
+  geopolitical/oil shocks with numbers and the caveat that inflationary regime-changing shocks
+  behave differently, builds a probability-weighted scenario tree with signposts, quantifies P&L for
+  the stated $450k book per scenario including the worst case, points out that TLT may not hedge an
+  inflationary oil shock (positive stock-bond correlation), and proposes sized, costed hedge or
+  de-risking options with gap risk in mind.

@@ -1,0 +1,11 @@
+schema_version: "1.1"
+name: overfit-backtest-verdict
+expected_outcome: |
+  A clear verdict that the result is not yet trustworthy enough to deploy with 3x leverage, driven by
+  quantified multiple-testing analysis: the ~200 trials are accounted for with a deflated Sharpe
+  ratio or equivalent (stating any assumption about the dispersion of trial Sharpes), the negative
+  skew and fat tails are used, and the expected maximum Sharpe from luck alone is compared to 2.1.
+  It flags other likely biases (parameter overfitting, regime dependence of 2021-2024 BTC, costs,
+  funding on perps, fills), quantifies what 3x leverage does to drawdown/ruin risk, and gives a
+  concrete validation path (out-of-sample/walk-forward, parameter plateau check, paper trading,
+  small size first).

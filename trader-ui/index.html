@@ -1,0 +1,1341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trader UI</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<style>
+/* Tokens: dark terminal by default, light via the toggle. Chart colors are read from these at draw time.
+   Categorical slots follow the validated reference order; polarity (up/down) is the blue<->red diverging pair. */
+:root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232322; --surface-3: #2c2c2a;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --border-2: rgba(255,255,255,0.18);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --up: #3987e5; --down: #e66767; --up-text: #6da7ec; --down-text: #ef8a8a;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --accent: #3987e5; --on-accent: #ffffff;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f0efec; --surface-3: #e8e7e2;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #75736d;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --border-2: rgba(11,11,11,0.20);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --up: #2a78d6; --down: #e34948; --up-text: #1c5cab; --down-text: #b8302f;
+  --accent: #2a78d6;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* component display rules (e.g. .form label) must not un-hide */
+html, body { margin: 0; }
+body { background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--up-text); }
+.muted { color: var(--muted); }
+.up { color: var(--up-text); } .down { color: var(--down-text); }
+
+/* header + tabs */
+.top { position: sticky; top: 0; z-index: 10; background: var(--page); border-bottom: 1px solid var(--border); }
+.bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; }
+.brand { font-weight: 650; letter-spacing: .02em; white-space: nowrap; }
+.brand span { color: var(--muted); font-weight: 400; }
+nav.tabs { display: flex; gap: 2px; overflow-x: auto; flex: 1; scrollbar-width: thin; }
+nav.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 10px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+nav.tabs button:hover { color: var(--ink); }
+nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.icon-btn { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+
+main { padding: 16px; max-width: 1480px; margin: 0 auto; }
+.tab[hidden] { display: none; }
+.grid { display: grid; gap: 16px; }
+.g2 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); }
+.g3 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
+.stack > * + * { margin-top: 16px; }
+
+/* panels */
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; position: relative; }
+.panel > header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.panel > header h2 { font-size: 15px; margin: 0; font-weight: 600; }
+.panel > header .stamp { margin-left: auto; font-size: 12px; color: var(--muted); }
+.panel h3 { font-size: 13px; margin: 14px 0 6px; color: var(--ink-2); font-weight: 600; }
+.spin { width: 14px; height: 14px; border: 2px solid var(--axis); border-top-color: var(--accent); border-radius: 50%; display: none; animation: rot .8s linear infinite; }
+.panel.busy > header .spin { display: inline-block; }
+.panel.busy > .body { opacity: .45; pointer-events: none; transition: opacity .2s; }
+@keyframes rot { to { transform: rotate(360deg); } }
+.err { border: 1px solid var(--critical); background: color-mix(in srgb, var(--critical) 12%, transparent); color: var(--ink); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; white-space: pre-wrap; font-size: 13px; }
+.err::before { content: "⚠ Error: "; font-weight: 600; }
+.empty { color: var(--muted); padding: 18px 0; }
+.note { color: var(--ink-2); font-size: 12.5px; }
+.warn { border-left: 3px solid var(--warning); padding: 6px 10px; background: color-mix(in srgb, var(--warning) 10%, transparent); font-size: 13px; border-radius: 0 6px 6px 0; }
+.warn::before { content: "⚠ "; }
+
+/* forms */
+.form { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin-bottom: 12px; }
+.form label, .field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); }
+.form label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); }
+input[type=text], input[type=number], select { background: var(--surface-2); border: 1px solid var(--border-2); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+input[type=number] { width: 7.5em; }
+input.wide { width: 18em; max-width: 100%; }
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; font-weight: 600; }
+.btn.ghost { background: var(--surface-2); color: var(--ink); border: 1px solid var(--border-2); font-weight: 500; }
+.btn.sm { padding: 4px 9px; font-size: 12.5px; }
+.btn:disabled { opacity: .5; cursor: default; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips label { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; color: var(--ink); cursor: pointer; }
+
+/* tables */
+.tw { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; position: sticky; top: 0; background: var(--surface); }
+table.num td:not(:first-child), table.num th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:hover td { background: var(--surface-2); }
+td.edit { padding: 2px 4px; }
+td.edit input { width: 100%; min-width: 5em; }
+.above { background: color-mix(in srgb, var(--up) 16%, transparent); }
+
+/* cards */
+.cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); }
+.card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.card .k { font-size: 12px; color: var(--muted); }
+.card .v { font-size: 22px; font-weight: 600; margin: 2px 0; text-transform: capitalize; }
+.card .sub { font-size: 12px; color: var(--ink-2); }
+.favour { margin: 10px 0 0; color: var(--ink-2); font-size: 13px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.hero { font-size: 30px; font-weight: 650; }
+
+pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow: auto; font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--ink); max-height: 520px; margin: 0; white-space: pre; }
+details > summary { cursor: pointer; color: var(--ink-2); font-size: 13px; margin: 8px 0; }
+.plot { width: 100%; min-height: 120px; }
+.spark path { fill: none; stroke: var(--ink-2); stroke-width: 1.5; }
+.spark circle { fill: var(--ink); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; border: 1px solid var(--border-2); }
+.badge.Strong { background: var(--s1); color: #fff; border-color: transparent; }
+.badge.Moderate { background: color-mix(in srgb, var(--s1) 30%, transparent); }
+.badge.Weak { background: transparent; color: var(--ink-2); border-style: dashed; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+.symbtn { background: none; border: 0; padding: 0; color: var(--up-text); cursor: pointer; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.legend-inline { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 4px 0 8px; }
+.legend-inline i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+.sum { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; max-width: 980px; }
+.sum:empty { display: none; }
+.sum .bl { font-size: 16px; font-weight: 600; line-height: 1.4; margin: 4px 0 10px; }
+.sum .stance { display: inline-block; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); border: 1px solid var(--border-2); border-radius: 999px; padding: 1px 8px; }
+.sum .nba { border-left: 3px solid var(--accent); padding: 2px 0 2px 12px; }
+.sum .nba-k { font-size: 12px; color: var(--muted); }
+.sum .nba-v { font-size: 18px; font-weight: 650; margin: 1px 0 6px; }
+.sum .kv { grid-template-columns: 8.5em 1fr; }
+.sum .kv dd { font-variant-numeric: normal; }
+.sum .warn { margin: 8px 0 0; }
+.sum ul { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
+.sum li + li { margin-top: 3px; }
+.sum .note { margin: 8px 0 0; }
+.quote { display: flex; flex-wrap: wrap; gap: 10px 32px; align-items: flex-end; margin-bottom: 10px; }
+.quote:empty { display: none; }
+.quote .q-name { font-size: 12.5px; color: var(--ink-2); }
+.quote .q-px { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.quote .q-chg { font-size: 16px; font-weight: 600; }
+.quote .q-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.state { font-size: 12px; font-weight: 600; color: var(--ink); }
+.state::before { content: "●"; margin-right: 4px; color: var(--muted); }
+.state.open::before { color: var(--good); }
+.state.pre-market::before, .state.after-hours::before { color: var(--warning); }
+.stale { color: var(--ink); background: color-mix(in srgb, var(--warning) 14%, transparent); border-radius: 4px; padding: 0 5px; }
+footer { padding: 18px 16px 28px; color: var(--muted); font-size: 12px; text-align: center; border-top: 1px solid var(--border); margin-top: 16px; }
+@media (max-width: 640px) { .sum .kv { grid-template-columns: 1fr; } .sum .kv dd { margin-bottom: 6px; } .brand span { display: none; } main { padding: 12px 16px; } .hero { font-size: 24px; } }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="bar">
+    <div class="brand">Trader UI <span>· master-trader toolkit</span></div>
+    <nav class="tabs" role="tablist" aria-label="Sections"></nav>
+    <button class="icon-btn" id="theme-btn" type="button" aria-label="Toggle light or dark theme">◐ Theme</button>
+  </div>
+</div>
+
+<main>
+<!-- 1. Dashboard -->
+<section class="tab" id="tab-dashboard" hidden>
+  <div class="stack">
+    <div class="grid g2">
+      <section class="panel" id="p-regime"><header><h2>Market regime</h2><span class="spin"></span><span class="stamp"></span><button class="btn ghost sm" data-refresh="dashboard">Refresh</button></header><div class="err" hidden></div><div class="body" id="regime-body"><p class="empty">Loading…</p></div></section>
+      <section class="panel" id="p-flags"><header><h2>Macro flags</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div><div class="body"><div class="sum" id="macro-plain"></div><details id="macro-flags-wrap"><summary>Mechanical flags</summary><ul id="macro-flags" style="margin:6px 0 0;padding-left:18px"><li class="muted">Loading…</li></ul></details></div></section>
+    </div>
+    <section class="panel" id="p-spy"><header><h2>SPY · daily with SMA50 / SMA200</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div><div class="body"><div class="plot" id="spy-chart" aria-label="SPY candlestick chart"></div></div></section>
+    <section class="panel" id="p-macro"><header><h2>Macro dashboard</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div><div class="body"><p class="note">Changes are absolute (in the series' own units), over 1 month, 3 months and 1 year. Source: FRED.</p><div class="grid g2" id="macro-body"><p class="empty">Loading…</p></div></div></section>
+  </div>
+</section>
+
+<!-- 2. Charts -->
+<section class="tab" id="tab-charts" hidden>
+  <section class="panel" id="p-chart"><header><h2 id="ch-title">Charts</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+    <form class="form" id="ch-form"><label>Symbol<input type="text" id="ch-sym" value="SPY" autocomplete="off" spellcheck="false"></label>
+      <label>Interval<select id="ch-int"><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select></label>
+      <label id="ch-range-l">Range<select id="ch-range"><option>5d</option><option selected>1mo</option><option>3mo</option><option>6mo</option><option>1y</option><option>2y</option></select></label>
+      <label id="ch-years-l" hidden>Years<input type="number" id="ch-years" value="2" min="0.25" max="30" step="any"></label>
+      <button class="btn">Load</button><label class="check"><input type="checkbox" id="ch-live" checked> Live (quote every 30 s, bars every 2 min)</label>
+      <span class="note">Yahoo symbols: SPY, NVDA, BTC-USD, ES=F, EURUSD=X…</span></form>
+    <div class="body"><div id="ch-quote" class="quote"></div><div id="ch-sum" class="sum"></div><div class="plot" id="ch-plot" aria-label="Price, volume and RSI chart"></div><h3>Indicators</h3><p class="note" id="ch-note"></p><pre id="ch-text">–</pre></div>
+  </section>
+</section>
+
+<!-- 2b. Day trading -->
+<section class="tab" id="tab-day" hidden>
+  <div class="stack">
+    <section class="panel" id="p-day"><header><h2 id="dy-title">Day trading</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="dy-form"><label>Symbol<input type="text" id="dy-sym" value="SPY" autocomplete="off" spellcheck="false" style="width:7em"></label>
+        <label>Bars<select id="dy-int"><option value="1m">1 min</option><option value="5m" selected>5 min</option><option value="15m">15 min</option></select></label>
+        <label>Session<input type="text" id="dy-sess" value="09:30-16:00" style="width:8em" title="Exchange-local hours; 00:00-24:00 for crypto"></label>
+        <label>Equity<input type="number" id="dy-eq" value="50000" step="1000"></label><label>Risk %<input type="number" id="dy-risk" value="0.5" step="0.05"></label>
+        <label>Target R<input type="number" id="dy-tr" value="2" step="0.5"></label>
+        <button class="btn">Load</button><label class="check"><input type="checkbox" id="dy-live" checked> Live (every 60 s)</label></form>
+      <div class="body"><div id="dy-quote" class="quote"></div><div id="dy-sum" class="sum"></div>
+        <div class="grid g2"><div><h3>Levels</h3><dl class="kv" id="dy-levels"></dl></div><div id="dy-ticket"></div></div>
+        <div class="plot" id="dy-plot" aria-label="Intraday candles with VWAP and key levels"></div>
+        <p class="note" id="dy-note"></p></div>
+    </section>
+    <section class="panel" id="p-inplay"><header><h2>Stocks in play</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="ip-form"><div class="field">Universes<div class="chips" id="ip-unis"></div></div><label>Symbols<input type="text" id="ip-syms" class="wide" placeholder="e.g. AMD,PLTR,SOFI"></label><button class="btn">Screen</button></form>
+      <div class="body" id="ip-out"><p class="empty">Gap, relative volume (time-adjusted), ATR and liquidity, with opening-range and VWAP position. Press Screen.</p></div>
+    </section>
+    <section class="panel" id="p-dbt"><header><h2>Intraday rule backtest</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="bt-form"><label>Symbol<input type="text" id="bt-sym" value="SPY" style="width:7em"></label>
+        <label>History<select id="bt-int"><option value="5m">5-min bars (~2 months)</option><option value="1h" selected>1-hour bars (~2 years)</option></select></label>
+        <label>Rule<select id="bt-rule"><option value="orb">Opening-range breakout</option><option value="vwap">VWAP trend</option><option value="imom">First → last half-hour</option><option value="noise">Noise-band momentum</option></select></label>
+        <label>Range (min)<input type="number" id="bt-or" value="60" min="1"></label><label>Mode<select id="bt-mode"><option value="break">break (stop orders)</option><option value="candle">candle (range direction)</option></select></label>
+        <label>Target R<input type="number" id="bt-tr" value="10" step="0.5"></label><label>Cost bps/side<input type="number" id="bt-cost" value="1" step="0.5"></label>
+        <label class="check"><input type="checkbox" id="bt-long"> Long only</label><button class="btn">Run</button></form>
+      <div class="body"><div class="plot" id="bt-plot"></div><pre id="bt-out" class="empty">Next-bar fills, flat by the close, costs per side. Published rules, so the parameters were fixed in advance; every change you try is another trial.</pre></div>
+    </section>
+  </div>
+</section>
+
+<!-- 3. Stock deep dive -->
+<section class="tab" id="tab-stock" hidden>
+  <div class="stack">
+    <section class="panel" id="p-stock"><header><h2>Stock deep dive</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="st-form"><label>Ticker<input type="text" id="st-ticker" value="NVDA" autocomplete="off" spellcheck="false"></label><button class="btn">Load</button><span class="note">Fundamentals from SEC EDGAR (built-in CIK map covers ~45 large caps).</span></form>
+      <div class="body" id="st-head"><p class="empty">Enter a ticker and press Load.</p></div>
+    </section>
+    <div id="st-panels" hidden>
+      <div class="stack">
+        <div class="grid g2">
+          <section class="panel"><header><h2>Revenue and growth</h2></header><div class="plot" id="st-rev"></div></section>
+          <section class="panel"><header><h2>Margins</h2></header><div class="plot" id="st-margin"></div></section>
+          <section class="panel"><header><h2>Net income and free cash flow</h2></header><div class="plot" id="st-cash"></div></section>
+          <section class="panel"><header><h2>Working capital (days)</h2></header><div class="plot" id="st-wc"></div></section>
+        </div>
+        <section class="panel"><header><h2>Quarterly financials</h2><span class="stamp" id="st-qnote"></span></header><div class="tw"><table class="num" id="st-table"></table></div></section>
+        <div class="grid g2">
+          <section class="panel" id="p-react"><header><h2>Earnings reactions</h2></header>
+            <div class="plot" id="st-react"></div>
+            <div class="form" style="margin-top:8px"><label>Options-implied move for the next release (%)<input type="number" id="st-implied" step="0.1" min="0" placeholder="e.g. 6.5"></label></div>
+            <div id="st-react-stats" class="note"></div>
+          </section>
+          <section class="panel" id="p-dcf"><header><h2>Reverse DCF</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+            <form class="form" id="dcf-form"><label>WACC %<input type="number" id="dcf-wacc" value="10" step="0.25"></label><label>Terminal growth %<input type="number" id="dcf-tg" value="3" step="0.25"></label><label class="check"><input type="checkbox" id="dcf-sbc" checked> Subtract SBC</label><button class="btn ghost">Recalculate</button></form>
+            <div class="body" id="dcf-out"></div>
+          </section>
+        </div>
+        <section class="panel" id="p-proj"><header><h2>Price projection · market-implied vs your scenarios</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+          <form class="form" id="pj-form">
+            <label>Spot<input type="number" id="pj-spot" step="0.01"></label>
+            <label>Days<input type="number" id="pj-days" value="90" min="1"></label>
+            <label>IV %<input type="number" id="pj-iv" step="0.5"></label>
+            <label>Earnings move % (1 SD)<input type="number" id="pj-event" step="0.5" placeholder="none"></label>
+            <label>Downside IV %<input type="number" id="pj-ivdown" step="0.5" placeholder="= IV"></label>
+            <label>Upside IV %<input type="number" id="pj-ivup" step="0.5" placeholder="= IV"></label>
+            <label>Levels<input type="text" id="pj-levels" class="wide" placeholder="comma-separated prices"></label>
+          </form>
+          <div class="tw" style="max-width:560px"><table id="pj-sc"><thead><tr><th>Scenario</th><th>Probability %</th><th>Price</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div class="form" style="margin-top:8px"><button class="btn ghost sm" type="button" id="pj-add">+ Scenario</button><button class="btn" type="button" id="pj-run">Run projection</button><span class="note">The scenario rows are placeholders. Replace them with your own view; probabilities are normalized to 100%.</span></div>
+          <div class="body" id="pj-out"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Scanner -->
+<section class="tab" id="tab-scanner" hidden>
+  <section class="panel" id="p-scan"><header><h2>Opportunity scanner</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+    <form class="form" id="sc-form">
+      <div class="field">Universes<div class="chips" id="sc-unis"></div></div>
+      <label>Custom symbols (overrides universes)<input type="text" id="sc-syms" class="wide" placeholder="e.g. AAPL,MSFT,GLD"></label>
+      <label>Equity<input type="number" id="sc-equity" value="100000" step="1000"></label>
+      <label>Risk per idea %<input type="number" id="sc-risk" value="0.5" step="0.1" min="0.05"></label>
+      <label>Top<input type="number" id="sc-top" value="25" min="1" max="100"></label>
+      <label class="check"><input type="checkbox" id="sc-puts" checked> Put positions for bearish ideas</label>
+      <button class="btn">Scan</button>
+    </form>
+    <p class="note">The first scan of a universe downloads 3 years of daily bars per symbol and can take a minute; results are cached for an hour.</p>
+    <div class="body" id="sc-out"><p class="empty">Pick universes and press Scan.</p></div>
+  </section>
+  <section class="panel" id="p-small" style="margin-top:16px"><header><h2>Daily selection · small-cap momentum (your 5 criteria)</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+    <form class="form" id="sm-form"><label>Up on the day ≥ %<input type="number" id="sm-chg" value="10" step="1"></label><label>Relative volume ≥ x<input type="number" id="sm-rvol" value="5" step="0.5"></label>
+      <label>Price from $<input type="number" id="sm-lo" value="2" step="0.5"></label><label>to $<input type="number" id="sm-hi" value="20" step="0.5"></label>
+      <label>Float under (M shares)<input type="number" id="sm-float" value="20" step="1"></label><label>News within (hours)<input type="number" id="sm-news" value="24" step="1"></label>
+      <button class="btn">Run selection</button></form>
+    <div class="body" id="sm-out"><p class="empty">Today's US-listed gainers, scored on your five criteria: up on the day, relative volume, a news catalyst, price range and float. Press Run selection.</p></div>
+  </section>
+</section>
+
+<!-- 4b. Paper portfolio -->
+<section class="tab" id="tab-paper" hidden>
+  <div class="stack">
+    <section class="panel" id="p-pacct"><header><h2>Paper portfolio</h2><span class="spin"></span><span class="stamp"></span><button class="btn ghost sm" type="button" id="pa-update">Update now</button><label class="check note" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="pa-auto" checked> every 60 s</label></header><div class="err" hidden></div>
+      <div class="body" id="pa-acct"><p class="empty">Loading…</p></div>
+    </section>
+    <section class="panel" id="p-porder"><header><h2>New bracket order</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="po-form">
+        <label>Symbol<input type="text" id="po-sym" style="width:7em" autocomplete="off" spellcheck="false"></label>
+        <label>Instrument<select id="po-kind"><option value="stock">Stock / ETF</option><option value="put">Put (buy)</option><option value="call">Call (buy)</option></select></label>
+        <label id="po-side-l">Side<select id="po-side"><option value="long">Long</option><option value="short">Short</option></select></label>
+        <label class="opt" hidden>Strike<input type="number" id="po-strike" step="0.5"></label><label class="opt" hidden>Expiry<input type="text" id="po-exp" placeholder="YYYY-MM-DD" style="width:8em"></label><label class="opt" hidden>IV % (if no quote)<input type="number" id="po-iv" step="1"></label>
+        <label>Entry<select id="po-etype"><option value="market">Market</option><option value="limit">Limit</option><option value="stop">Stop (breakout)</option></select></label><label id="po-epx-l" hidden>Entry price<input type="number" id="po-epx" step="0.01"></label>
+        <label>Stop-loss<input type="number" id="po-stop" step="0.01"></label><label>Take-profit<input type="number" id="po-tgt" step="0.01" placeholder="or Target R"></label><label>Target R<input type="number" id="po-tr" step="0.5" placeholder="2"></label>
+        <label>Qty<input type="number" id="po-qty" step="1" placeholder="or Risk %"></label><label>Risk %<input type="number" id="po-risk" step="0.05" value="0.5"></label>
+        <label>Flatten at<input type="text" id="po-flat" value="15:55" style="width:5.5em" placeholder="HH:MM"></label><label>Entry TIF<select id="po-tif"><option value="day">Day</option><option value="gtc">GTC</option></select></label>
+        <label>Setup tag<input type="text" id="po-setup" style="width:8em" placeholder="orb, vwap…"></label><label class="check"><input type="checkbox" id="po-force"> Override risk caps</label>
+        <button class="btn">Place bracket</button></form>
+      <p class="note">A bracket is one entry with a stop-loss and a take-profit attached: whichever fills first cancels the other. Options brackets sit on the underlying's price (a put's stop is above it). Qty wins over Risk % when both are set.</p>
+      <div class="body" id="po-out"></div>
+    </section>
+    <section class="panel" id="p-ppos"><header><h2>Positions, orders and trades</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <div class="body" id="pp-out"><p class="empty">No account yet.</p></div>
+    </section>
+  </div>
+</section>
+
+<!-- 5. Strategy Lab -->
+<section class="tab" id="tab-lab" hidden>
+  <section class="panel" id="p-lab"><header><h2>Strategy lab · walk-forward tournament</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+    <form class="form" id="lab-form"><label>Symbols (max 12)<input type="text" id="lab-syms" class="wide" value="SPY,QQQ,GLD,TLT"></label><label class="check"><input type="checkbox" id="lab-short"> Allow shorts</label><button class="btn">Run</button></form>
+    <p class="warn">A run fetches 20 years of history per symbol and walk-forward tests every strategy family. It can take up to a minute. Results are cached for 6 hours.</p>
+    <div class="body"><pre id="lab-out" class="empty">Press Run.</pre></div>
+  </section>
+</section>
+
+<!-- 6. Options -->
+<section class="tab" id="tab-options" hidden>
+  <div class="stack">
+    <section class="panel" id="p-pay"><header><h2>Options payoff</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="op-form"><label>Symbol<input type="text" id="op-sym" value="SPY" autocomplete="off" spellcheck="false" style="width:7em"></label><button class="btn ghost" type="button" id="op-load">Load price</button>
+        <label>Spot<input type="number" id="op-spot" value="100" step="0.01"></label><label>Days to expiry<input type="number" id="op-days" value="30" min="1"></label><label>Vol %<input type="number" id="op-vol" value="25" step="0.5"></label><label>Rate %<input type="number" id="op-r" value="4" step="0.25"></label></form>
+      <p class="note" id="op-src" style="margin-top:-4px"></p>
+      <div class="form"><span class="note">Presets:</span><span class="chips" id="op-presets"></span></div>
+      <div class="tw" style="max-width:720px"><table id="op-legs"><thead><tr><th>Type</th><th>Strike</th><th>Qty (+long / −short)</th><th>Premium (blank = Black-Scholes)</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="form" style="margin-top:8px"><button class="btn ghost sm" type="button" id="op-add">+ Leg</button><button class="btn" type="button" id="op-run">Compute payoff</button><span class="note">Options are 100x; stock qty is in shares.</span></div>
+      <div class="body" id="op-out"></div>
+    </section>
+    <section class="panel" id="p-move"><header><h2>Expected move</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="mv-form"><label>Spot<input type="number" id="mv-S" value="100" step="0.01"></label><label>Days<input type="number" id="mv-days" value="30" min="1"></label><label>IV %<input type="number" id="mv-vol" value="25" step="0.5"></label><label>or ATM straddle price<input type="number" id="mv-straddle" step="0.01"></label><label>Event-expiry IV %<input type="number" id="mv-event" step="0.5"></label><label>Ex-event IV %<input type="number" id="mv-base" step="0.5"></label><button class="btn">Calculate</button></form>
+      <div class="body"><pre id="mv-out" class="empty">–</pre></div>
+    </section>
+  </div>
+</section>
+
+<!-- 7. Risk -->
+<section class="tab" id="tab-risk" hidden>
+  <div class="grid g2" id="risk-forms"></div>
+</section>
+
+<!-- 8. Geopolitics -->
+<section class="tab" id="tab-geo" hidden>
+  <div class="stack">
+    <section class="panel" id="p-geo"><header><h2>Risk gauges</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <div class="body grid g3"><div><h3>Geopolitical risk index (GPR, daily)</h3><div class="plot" id="geo-gpr"></div></div><div><h3>US policy uncertainty (EPU, daily)</h3><div class="plot" id="geo-epu"></div></div><div><h3>Implied vol: oil, equities, gold</h3><div class="plot" id="geo-vol"></div></div></div>
+    </section>
+    <section class="panel" id="p-events"><header><h2>Event study · 45 geopolitical shocks</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <form class="form" id="ev-form"><div class="field">Event types (none = all)<div class="chips" id="ev-types"><span class="muted">Loading…</span></div></div><button class="btn">Run study</button></form>
+      <div class="body" id="ev-out"><p class="empty">Loading…</p></div>
+    </section>
+    <section class="panel" id="p-tree"><header><h2>Scenario tree P&amp;L</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+      <p class="note">Asset moves are % for prices; for a rate position entered as <code>NAME=DV01,dv01</code>, the move is in bp.</p>
+      <div class="tw"><table id="tr-table"></table></div>
+      <div class="form" style="margin-top:8px"><button class="btn ghost sm" type="button" id="tr-add">+ Scenario</button><button class="btn ghost sm" type="button" id="tr-addcol">+ Asset</button></div>
+      <form class="form" id="tr-form"><label>Positions (NAME=notional, space-separated)<input type="text" id="tr-pos" class="wide" value="SPX=100000 WTI=20000"></label><label>Max loss<input type="number" id="tr-max" value="5000"></label><button class="btn">Evaluate</button></form>
+      <div class="body"><pre id="tr-out" class="empty">–</pre></div>
+    </section>
+  </div>
+</section>
+
+<!-- 9. Order flow -->
+<section class="tab" id="tab-flow" hidden>
+  <section class="panel" id="p-flow"><header><h2>Order flow · live public trades</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+    <form class="form" id="fl-form"><label>Symbol<select id="fl-sym"><option>BTC</option><option>ETH</option><option>SOL</option></select></label><label>Exchange<select id="fl-ex"><option value="coinbase">Coinbase</option><option value="kraken">Kraken</option></select></label><label>Minutes<input type="number" id="fl-min" value="10" min="1" max="60"></label><label>Bar<select id="fl-bar"><option>15s</option><option selected>30s</option><option>1m</option><option>5m</option></select></label><button class="btn">Load</button></form>
+    <div class="body" id="fl-body"><p class="empty">Press Load to pull the last few minutes of trades.</p></div>
+  </section>
+</section>
+</main>
+
+<footer>
+  Data: Yahoo Finance (unofficial, may be delayed or revised), FRED, SEC EDGAR, Caldara–Iacoviello GPR index, Coinbase / Kraken public trades.
+  Server cache: prices 15 min, macro 30 min, regime/scan 1 h, fundamentals and studies 6 h. Each panel shows when it last loaded.<br>
+  This is analysis, not personalized investment advice.
+</footer>
+
+<script>
+'use strict';
+// ------------------------------------------------------------------ utilities
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const num = (v, d = 2) => isNum(v) ? v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–';
+const pct = (v, d = 1) => isNum(v) ? (v * 100).toFixed(d) + '%' : '–';
+const spct = (v, d = 1) => isNum(v) ? (v > 0 ? '+' : '') + (v * 100).toFixed(d) + '%' : '–';
+const dec = v => { const a = Math.abs(v); return a >= 1000 ? 0 : a >= 100 ? 1 : a >= 1 ? 2 : 3; };
+const auto = v => !isNum(v) ? '–' : Math.abs(v) < 1 && v !== 0 ? v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 3 }) : num(v, dec(v));
+const chgFmt = v => { const a = Math.abs(v); return num(v, a >= 1000 ? 0 : a >= 100 ? 1 : a >= 0.01 ? 2 : 3); };
+const big = v => { if (!isNum(v)) return '–'; const a = Math.abs(v), s = v < 0 ? '−' : ''; return s + (a >= 1e12 ? (a / 1e12).toFixed(2) + 'T' : a >= 1e9 ? (a / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(1) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(1) + 'K' : a.toFixed(0)); };
+const usd = v => isNum(v) ? (v < 0 ? '−$' + big(-v) : '$' + big(v)) : '–';
+const val = id => { const v = $('#' + id).value.trim(); return v === '' ? null : Number(v); };
+const signed = (v, f = chgFmt) => !isNum(v) ? '<span class="muted">–</span>' : Math.abs(v) < 5e-4 ? '<span class="muted">· 0</span>' : v > 0 ? `<span class="up">▲ +${f(v)}</span>` : v < 0 ? `<span class="down">▼ −${f(-v)}</span>` : '<span class="muted">· 0</span>';
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } } };
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  let r;
+  try { r = await fetch(path, opt); } catch (e) { throw new Error('Cannot reach the server. Is python trader-ui/server.py running?'); }
+  let j;
+  try { j = await r.json(); } catch { throw new Error(`HTTP ${r.status} from ${path}`); }
+  if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+// Runs fn with the panel's spinner on and shows any failure in the panel's error box.
+async function run(panelId, fn) {
+  const p = document.getElementById(panelId), err = p.querySelector(':scope > .err');
+  p.classList.add('busy');
+  if (err) err.hidden = true;
+  try {
+    await fn();
+    const st = p.querySelector(':scope > header .stamp');
+    if (st) st.textContent = 'loaded ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    console.error(e);
+    if (err) { err.textContent = e.message; err.hidden = false; }
+  } finally { p.classList.remove('busy'); }
+}
+
+// ------------------------------------------------------------------ chart system
+const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+let C = {};
+function readColors() {
+  const cs = getComputedStyle(document.documentElement), g = n => cs.getPropertyValue('--' + n).trim();
+  C = Object.fromEntries(['ink', 'ink-2', 'muted', 'grid', 'axis', 'surface', 'surface-2', 'up', 'down', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']
+    .map(k => [k.replace('-', ''), g(k)]));
+}
+const SERIES = () => [C.s1, C.s2, C.s3, C.s4, C.s5, C.s6, C.s7, C.s8];
+function alpha(hex, a) { const h = hex.replace('#', ''); const n = parseInt(h.length === 3 ? h.replace(/./g, '$&$&') : h, 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; }
+
+const PCFG = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d', 'toggleSpikelines', 'hoverCompareCartesian', 'hoverClosestCartesian'] };
+const plots = new Map();
+function axis(a = {}) {
+  const o = { gridcolor: C.grid, linecolor: C.axis, zerolinecolor: C.axis, tickcolor: C.axis, tickfont: { color: C.muted, size: 11 }, automargin: true,
+    showspikes: true, spikemode: 'across', spikecolor: C.muted, spikethickness: 1, spikedash: 'dot', ...a };
+  if (typeof a.title === 'string') o.title = { text: a.title, font: { color: C.ink2, size: 11 }, standoff: 6 };
+  return o;
+}
+function styled(l) {
+  const o = { paper_bgcolor: C.surface, plot_bgcolor: C.surface, font: { family: FONT, color: C.ink2, size: 12 }, margin: { l: 8, r: 8, t: 30, b: 8 },
+    legend: { orientation: 'h', x: 0, y: 1.0, yanchor: 'bottom', font: { color: C.ink2, size: 11 }, bgcolor: 'rgba(0,0,0,0)' },
+    hovermode: 'x unified', hoverlabel: { bgcolor: C.surface2, bordercolor: C.axis, font: { color: C.ink, family: FONT, size: 12 } }, barcornerradius: 3, ...l };
+  if (!o.xaxis) o.xaxis = {};
+  if (!o.yaxis) o.yaxis = {};
+  for (const k of Object.keys(o)) if (/^[xy]axis\d*$/.test(k)) o[k] = axis(o[k]);
+  if (o.annotations) o.annotations = o.annotations.map(a => ({ font: { color: C.ink2, size: 11 }, showarrow: false, ...a }));
+  return o;
+}
+function draw(id, build) { plots.set(id, build); paint(id); }
+function paint(id) {
+  const el = document.getElementById(id); if (!el) return;
+  const [t, l] = plots.get(id)();
+  if (l.height) el.style.height = l.height + 'px';  // responsive resizes read the container height; pin it
+  Plotly.react(el, t, styled(l), PCFG);
+}
+function resizeIn(root) { for (const id of plots.keys()) { const el = document.getElementById(id); if (el && root.contains(el) && el.offsetParent) Plotly.Plots.resize(el); } }
+
+const line = (x, y, name, color, ln = {}, more = {}) => ({ type: 'scatter', mode: 'lines', x, y, name, line: { color, width: 2, ...ln }, ...more });
+const candles = (x, o, h, l, c, more = {}) => ({ type: 'candlestick', name: 'Price', x, open: o, high: h, low: l, close: c, whiskerwidth: 0,
+  increasing: { line: { color: C.up, width: 1 }, fillcolor: C.surface }, decreasing: { line: { color: C.down, width: 1 }, fillcolor: C.down }, ...more });
+const hline = (y, yref = 'y', color = C.axis, dash = 'dash') => ({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref, y0: y, y1: y, line: { color, width: 1, dash } });
+const vline = (x, color = C.muted, dash = 'dash', xref = 'x') => ({ type: 'line', yref: 'paper', y0: 0, y1: 1, xref, x0: x, x1: x, line: { color, width: 1, dash } });
+
+// Hide weekends and missing weekdays (holidays) for exchange data; leave 24/7 series alone.
+function breaks(dates) {
+  if (!dates.length) return [];
+  const wd = d => new Date(d + 'T00:00:00Z').getUTCDay();
+  if (dates.some(d => wd(d) === 0 || wd(d) === 6)) return [];
+  const have = new Set(dates), miss = [];
+  for (let t = Date.parse(dates[0] + 'T00:00:00Z'), end = Date.parse(dates.at(-1) + 'T00:00:00Z'); t <= end; t += 864e5) {
+    const d = new Date(t), w = d.getUTCDay(), s = d.toISOString().slice(0, 10);
+    if (w > 0 && w < 6 && !have.has(s)) miss.push(s);
+  }
+  return [{ bounds: ['sat', 'mon'] }, ...(miss.length ? [{ values: miss }] : [])];
+}
+
+// ------------------------------------------------------------------ tabs
+const TABS = [['dashboard', 'Dashboard'], ['charts', 'Charts'], ['day', 'Day Trading'], ['stock', 'Stock'], ['scanner', 'Scanner'], ['paper', 'Paper'], ['lab', 'Strategy Lab'],
+  ['options', 'Options'], ['risk', 'Risk'], ['geo', 'Geopolitics'], ['flow', 'Order Flow']];
+const INIT = {}, started = new Set();
+function showTab(name) {
+  if (!TABS.some(t => t[0] === name)) name = 'dashboard';
+  for (const [k] of TABS) {
+    $('#tab-' + k).hidden = k !== name;
+    $(`nav.tabs [data-tab="${k}"]`).setAttribute('aria-selected', k === name);
+  }
+  if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+  if (!started.has(name)) { started.add(name); INIT[name]?.(); }
+  requestAnimationFrame(() => resizeIn($('#tab-' + name)));
+}
+$('nav.tabs').innerHTML = TABS.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}">${l}</button>`).join('');
+$('nav.tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) showTab(b.dataset.tab); });
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+function onSubmit(id, fn) { $('#' + id).addEventListener('submit', e => { e.preventDefault(); fn(); }); }
+
+// ------------------------------------------------------------------ 1. dashboard
+function regimeCards(r) {
+  const card = (k, v, sub) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="sub">${sub}</div></div>`;
+  const tr = r.trend === 'up' ? '<span class="up">▲</span> up' : r.trend === 'down' ? '<span class="down">▼</span> down' : esc(r.trend);
+  return `<div class="cards">
+    ${card('Trend', tr, `${esc(r.bench)} vs its 200-day average`)}
+    ${card('Breadth', pct(r.breadth, 0), `of ${r.n} instruments above SMA200`)}
+    ${card('Volatility', esc(r.vol_regime), `20d realized ${pct(r.rv20, 1)}, ${pct(r.vol_pct, 0)} percentile of 3y`)}
+    ${card('Risk dial', `${num(r.tilt.long, 2)}× / ${num(r.tilt.short, 2)}×`, 'long / short size multiplier (bounded 0.5–1.5)')}
+  </div><p class="favour"><b>Favours:</b> ${esc(r.favour)}</p>`;
+}
+function spark(d, v) {
+  const pts = v.map((y, i) => [i, y]).filter(p => isNum(p[1]));
+  if (pts.length < 2) return '';
+  const W = 110, H = 26, P = 3, ys = pts.map(p => p[1]), lo = Math.min(...ys), hi = Math.max(...ys), n = Math.max(1, v.length - 1);
+  const X = i => P + (W - 2 * P) * i / n, Y = y => H - P - (H - 2 * P) * (hi === lo ? 0.5 : (y - lo) / (hi - lo));
+  const path = pts.map((q, j) => `${j ? 'L' : 'M'}${X(q[0]).toFixed(1)},${Y(q[1]).toFixed(1)}`).join('');
+  const last = pts.at(-1);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="1-year trend"><title>${esc(d[0])} to ${esc(d.at(-1))}: low ${auto(lo)}, high ${auto(hi)}</title><path d="${path}"/><circle cx="${X(last[0]).toFixed(1)}" cy="${Y(last[1]).toFixed(1)}" r="2.2"/></svg>`;
+}
+function renderMacro(m) {
+  $('#macro-flags').innerHTML = m.flags.length ? m.flags.map(f => `<li>${esc(f)}</li>`).join('') : '<li class="muted">No flags.</li>';
+  const pl = m.plain;
+  $('#macro-plain').innerHTML = pl ? `<span class="stance">${esc(pl.stance)}</span><div class="bl">${esc(pl.bottom_line)}</div>
+    <div class="nba"><div class="nba-k">Next best action (rule-based)</div><div class="nba-v">${esc(pl.action.label)}</div><p style="margin:0">${esc(pl.action.text)}</p></div>
+    <details open><summary>What each gauge says</summary><ul>${pl.points.map(p => `<li><b>${esc(p.gauge)}:</b> ${esc(p.plain)}</li>`).join('')}</ul></details>
+    ${pl.watch.length ? `<p class="note"><b>Watch:</b> ${esc(pl.watch.join('; '))}.</p>` : ''}` : '';
+  $('#macro-body').innerHTML = m.sections.map(s => `<div><h3>${esc(s.name)}</h3><div class="tw"><table class="num">
+    <thead><tr><th>Series</th><th>Last</th><th>As of</th><th>1m</th><th>3m</th><th>1y</th><th>1y trend</th></tr></thead>
+    <tbody>${s.rows.map(r => r.error
+      ? `<tr><td>${esc(r.label)}</td><td colspan="6" class="muted" style="text-align:left">${esc(r.id)}: ${esc(r.error)}</td></tr>`
+      : `<tr><td title="${esc(r.id)}">${esc(r.label)}</td><td>${auto(r.last)}</td><td class="muted">${esc(r.date)}</td><td>${signed(r.chg1m)}</td><td>${signed(r.chg3m)}</td><td>${signed(r.chg1y)}</td><td>${spark(r.spark_d, r.spark_v)}</td></tr>`).join('')}</tbody></table></div></div>`).join('');
+}
+function loadDashboard() {
+  run('p-regime', async () => { $('#regime-body').innerHTML = regimeCards(await api('/api/regime')); });
+  run('p-flags', async () => {
+    await run('p-macro', async () => renderMacro(await api('/api/macro')));
+    if (!$('#p-macro > .err').hidden) throw new Error('Macro data failed to load (see the Macro dashboard panel).');
+  });
+  run('p-spy', async () => {
+    const p = await api('/api/prices?symbol=SPY&years=2');
+    $('#p-spy h2').textContent = `SPY · daily with SMA50 / SMA200 · last bar ${p.date.at(-1)}`;
+    draw('spy-chart', () => [[candles(p.date, p.open, p.high, p.low, p.close), line(p.date, p.sma50, 'SMA50', C.s3, { width: 1.5 }), line(p.date, p.sma200, 'SMA200', C.s7, { width: 1.5 })],
+      { height: 380, xaxis: { rangeslider: { visible: false }, rangebreaks: breaks(p.date) }, yaxis: { side: 'right', hoverformat: '.2f' } }]);
+  });
+}
+INIT.dashboard = loadDashboard;
+$('[data-refresh="dashboard"]').addEventListener('click', loadDashboard);
+
+// ------------------------------------------------------------------ live quote (Charts + Stock)
+const ago = s => !isNum(s) ? '' : s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
+function quoteHTML(q) {
+  const chg = isNum(q.change) ? `<span class="q-chg ${q.change >= 0 ? 'up' : 'down'}">${q.change >= 0 ? '▲ +' : '▼ −'}${num(Math.abs(q.change), 2)} (${spct(q.change_pct, 2)})</span>` : '';
+  // a quote more than 15 min old while the session is open is delayed data, not a quiet market
+  const stale = q.state === 'open' && q.age_s > 300 ? ` <span class="stale">no update for ~${Math.round(q.age_s / 60)} min: feed is likely delayed</span>` : '';
+  const ext = q.ext ? `<dt>${q.state === 'pre-market' ? 'Pre-market' : 'Extended hours'}</dt><dd>${num(q.ext.price, 2)} (${spct(q.ext.change_pct, 2)}) at ${esc(q.ext.time.slice(11))}</dd>` : '';
+  return `<div><div class="q-name">${esc(q.name)} · ${esc(q.exchange)} · ${esc(q.currency)}</div>
+    <div class="q-px"><span class="hero">${num(q.price, q.price < 1 ? 4 : 2)}</span>${chg}</div>
+    <div class="q-meta"><span class="state ${esc(q.state.replace(' ', '-'))}">${esc(q.state[0].toUpperCase() + q.state.slice(1))}</span> · as of ${esc(q.time?.slice(11))} ${esc(q.tz)} on ${esc(q.time?.slice(0, 10))} · ${ago(q.age_s)}${stale}</div></div>
+    <dl class="kv"><dt>Previous close</dt><dd>${num(q.prev_close, 2)}</dd><dt>Day range</dt><dd>${num(q.day_low, 2)} – ${num(q.day_high, 2)}</dd>
+      <dt>Volume</dt><dd>${big(q.volume)}</dd><dt>52-week range</dt><dd>${num(q.w52_low, 2)} – ${num(q.w52_high, 2)}</dd>${ext}</dl>`;
+}
+async function getQuote(sym) { return api('/api/quote?symbol=' + encodeURIComponent(sym)); }
+async function getSummary(sym) { return api('/api/summary?symbol=' + encodeURIComponent(sym)); }
+function summaryHTML(s) {
+  if (s instanceof Error) return `<p class="muted" style="margin:0">Plain-English summary unavailable: ${esc(s.message)}</p>`;
+  const a = s.action;
+  return `<span class="stance">${esc(s.stance)}</span><div class="bl">${esc(s.bottom_line)}</div>
+    <div class="nba"><div class="nba-k">Next best action (rule-based)</div><div class="nba-v">${esc(a.label)}</div>
+      <dl class="kv"><dt>If you own it</dt><dd>${esc(a.if_you_own)}</dd><dt>If you don't</dt><dd>${esc(a.if_you_dont)}</dd></dl>
+      ${a.caution ? `<p class="warn">${esc(a.caution)}</p>` : ''}</div>
+    <details><summary>Why: ${s.points.length} points behind this read</summary><ul>${s.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul></details>
+    <p class="note">${esc(s.note)}</p>`;
+}
+
+// ------------------------------------------------------------------ 2. charts
+let CHART = null, liveTick = 0;  // {query, p} of the chart on screen
+function chartQuery() {
+  const q = new URLSearchParams({ symbol: $('#ch-sym').value.trim().toUpperCase() || 'SPY', interval: $('#ch-int').value });
+  if (q.get('interval') === '1h') q.set('range', $('#ch-range').value); else q.set('years', $('#ch-years').value || 2);
+  return q.toString();
+}
+function syncInterval() { const h = $('#ch-int').value === '1h'; $('#ch-range-l').hidden = !h; $('#ch-years-l').hidden = h; }
+$('#ch-int').addEventListener('change', () => { syncInterval(); loadChart(); });
+$('#ch-range').addEventListener('change', loadChart);
+// First bar of each session as a labelled tick, thinned to ~10 labels.
+function sessionTicks(labels) {
+  const idx = [];
+  labels.forEach((l, i) => { if (!i || l.slice(0, 10) !== labels[i - 1].slice(0, 10)) idx.push(i); });
+  const step = Math.ceil(idx.length / 10), pick = idx.filter((_, k) => k % step === 0);
+  const day = l => new Date(l.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return { tickvals: pick.map(i => labels[i]), ticktext: pick.map(i => day(labels[i])) };
+}
+function showQuote(q) {
+  $('#ch-quote').innerHTML = quoteHTML(q);
+  const p = CHART?.p;
+  // keep the in-progress candle current between bar refreshes
+  if (p && p.partial && q.symbol === p.symbol && q.state === 'open' && isNum(q.price)) {
+    const i = p.close.length - 1;
+    p.close[i] = q.price; p.high[i] = Math.max(p.high[i], q.price); p.low[i] = Math.min(p.low[i], q.price);
+    paint('ch-plot');
+  }
+}
+async function refreshQuote(sym) {
+  try { showQuote(await getQuote(sym)); } catch (e) { $('#ch-quote').innerHTML = `<p class="err" style="margin:0">Quote failed: ${esc(e.message)}</p>`; }
+}
+function loadChart() {
+  const query = chartQuery(), sym = new URLSearchParams(query).get('symbol');
+  return run('p-chart', async () => {
+    $('#ch-sum').innerHTML = '';
+    const [p, q, s] = await Promise.all([api('/api/prices?' + query), getQuote(sym).catch(e => e), getSummary(sym).catch(e => e)]);
+    drawChart(p, query);
+    $('#ch-sum').innerHTML = summaryHTML(s);
+    if (q instanceof Error) $('#ch-quote').innerHTML = `<p class="err" style="margin:0">Quote failed: ${esc(q.message)}</p>`;
+    else showQuote(q);
+  });
+}
+// Live mode: quote every 30 s, bars every 2 min, only while the Charts tab is on screen.
+setInterval(async () => {
+  if (!CHART || !$('#ch-live').checked || $('#tab-charts').hidden || document.hidden) return;
+  liveTick++;
+  if (liveTick % 4 === 0) {
+    try {
+      const [p, s] = await Promise.all([api('/api/prices?' + CHART.query), getSummary(CHART.p.symbol).catch(e => e)]);
+      drawChart(p, CHART.query);
+      if (!(s instanceof Error)) $('#ch-sum').innerHTML = summaryHTML(s);
+    } catch (e) { console.warn('bar refresh failed', e); }
+  }
+  refreshQuote(CHART.p.symbol);
+}, 30000);
+function drawChart(p, query) {
+  CHART = { query, p };
+  const hourly = p.interval === '1h', last = p.date.at(-1) ?? '–';
+  $('#ch-title').textContent = `${p.symbol} · ${hourly ? `hourly, ${p.range}` : `daily, ${p.range}`} · last bar ${last}${hourly ? ' ' + (p.tz || '') : ''}${p.partial ? ' (in progress)' : ''}`;
+  $('#ch-text').textContent = p.text;
+  $('#ch-note').textContent = (hourly ? 'Periods count hourly bars (SMA20 = 20 hours); the 30-week stage line assumes daily bars. ' : '')
+    + (p.partial ? 'The summary uses completed bars only; the chart includes the bar still forming.' : '');
+  const x = p.date, br = hourly ? null : breaks(p.date), ticks = hourly ? sessionTicks(x) : {};
+  const xa = more => hourly ? { type: 'category', ...ticks, ...more } : { rangebreaks: br, ...more };
+  draw('ch-plot', () => [[
+      line(x, p.bb_up, 'Bollinger 20/2', C.muted, { width: 1, dash: 'dot' }, { legendgroup: 'bb' }),
+      line(x, p.bb_lo, 'Bollinger lower', C.muted, { width: 1, dash: 'dot' }, { legendgroup: 'bb', showlegend: false, fill: 'tonexty', fillcolor: alpha(C.muted, 0.07) }),
+      candles(x, p.open, p.high, p.low, p.close),
+      line(x, p.sma20, 'SMA20', C.s2, { width: 1.5 }), line(x, p.sma50, 'SMA50', C.s3, { width: 1.5 }), line(x, p.sma200, 'SMA200', C.s7, { width: 1.5 }),
+      { type: 'bar', x, y: p.volume, name: 'Volume', marker: { color: alpha(C.muted, 0.55) }, xaxis: 'x2', yaxis: 'y2', showlegend: false },
+      line(x, p.rsi14, 'RSI14', C.ink2, { width: 1.5 }, { xaxis: 'x3', yaxis: 'y3', showlegend: false }),
+    ], {
+      height: 640, uirevision: query,  // keep the user's zoom across live refreshes
+      xaxis: xa({ rangeslider: { visible: false }, showticklabels: false, anchor: 'y' }),
+      yaxis: { domain: [0.40, 1], side: 'right', hoverformat: '.2f' },
+      xaxis2: xa({ matches: 'x', anchor: 'y2', showticklabels: false }),
+      yaxis2: { domain: [0.23, 0.37], side: 'right', title: 'Volume' },
+      xaxis3: xa({ matches: 'x', anchor: 'y3' }),
+      yaxis3: { domain: [0, 0.19], side: 'right', range: [0, 100], tickvals: [30, 50, 70], ticktext: ['30', '50', '70'], title: 'RSI14', hoverformat: '.1f' },
+      shapes: [hline(30, 'y3'), hline(70, 'y3')],
+    }]);
+}
+function openChart(sym) { $('#ch-sym').value = sym; started.add('charts'); showTab('charts'); loadChart(); }
+INIT.charts = () => { syncInterval(); loadChart(); };
+onSubmit('ch-form', loadChart);
+
+// ------------------------------------------------------------------ 3. stock deep dive
+let STOCK = null;
+function stockQuery(t) {
+  return `ticker=${encodeURIComponent(t)}&wacc=${(val('dcf-wacc') ?? 10) / 100}&tg=${(val('dcf-tg') ?? 3) / 100}&sbc=${$('#dcf-sbc').checked ? 1 : 0}`;
+}
+function loadStock() {
+  const t = $('#st-ticker').value.trim().toUpperCase() || 'NVDA';
+  return run('p-stock', async () => {
+    const [s, q, sm] = await Promise.all([api('/api/stock?' + stockQuery(t)), getQuote(t).catch(() => null), getSummary(t).catch(e => e)]);
+    STOCK = s;
+    if (q && isNum(q.price)) s.live = q;
+    s.summary = sm;
+    $('#st-panels').hidden = false;
+    renderStockHead(s); renderFund(s); renderQuarters(s); renderReactions(s); renderDcf(s); prefillProjection(s);
+    requestAnimationFrame(() => resizeIn($('#tab-stock')));
+  });
+}
+function renderStockHead(s) {
+  const d = s.dcf;
+  $('#st-head').innerHTML = `<div class="cards">
+    <div class="card"><div class="k">${esc(s.ticker)} · CIK ${esc(s.cik)}</div><div class="v" style="text-transform:none">${esc(s.entity)}</div><div class="sub">Latest quarter ${esc(s.rows.at(-1)?.quarter_end)}</div></div>
+    ${s.live ? `<div class="card"><div class="k">Price · live</div><div class="v">${num(s.live.price, 2)} <span class="${s.live.change >= 0 ? 'up' : 'down'}" style="font-size:14px">${spct(s.live.change_pct, 2)}</span></div>
+      <div class="sub"><span class="state ${esc(s.live.state.replace(' ', '-'))}">${esc(s.live.state)}</span> · ${esc(s.live.time?.slice(11, 16))} ${esc(s.live.tz)} · ${ago(s.live.age_s)}</div></div>`
+      : `<div class="card"><div class="k">Price</div><div class="v">${num(s.price, 2)}</div><div class="sub">close ${esc(s.price_date)} (live quote unavailable)</div></div>`}
+    <div class="card"><div class="k">1y realized vol</div><div class="v">${pct(s.realized_vol_1y, 1)}</div><div class="sub">annualized, daily log returns</div></div>
+    <div class="card"><div class="k">Market cap · net cash</div><div class="v">${d ? usd(d.mcap) : '–'}</div><div class="sub">net cash ${usd(s.net_cash)}</div></div>
+  </div><div class="sum" style="margin:12px 0 0">${summaryHTML(s.summary)}</div>
+  <p class="note" style="margin:10px 0 0">${esc(s.next_release_note)} The reverse DCF uses the last close (${num(s.price, 2)} on ${esc(s.price_date)}).</p>`;
+}
+const bn = a => a.map(v => isNum(v) ? v / 1e9 : null);
+const pc = a => a.map(v => isNum(v) ? v * 100 : null);
+function renderFund(s) {
+  const R = s.rows, x = R.map(r => r.quarter_end), col = k => R.map(r => r[k]);
+  const mk = {};  // filled per paint so the marker ring follows the theme
+  const ring = () => Object.assign(mk, { mode: 'lines+markers', marker: { size: 8, line: { color: C.surface, width: 2 } } });
+  draw('st-rev', () => [[
+    { type: 'bar', x, y: bn(col('revenue')), name: 'Revenue $bn', marker: { color: C.s1 }, hovertemplate: '$%{y:.2f}bn' },
+    { type: 'bar', x, y: pc(col('rev_yoy')), name: 'YoY %', marker: { color: col('rev_yoy').map(v => v >= 0 ? C.up : C.down) }, xaxis: 'x2', yaxis: 'y2', hovertemplate: '%{y:+.1f}%' },
+  ], { height: 320, showlegend: false, xaxis: { type: 'category', showticklabels: false, anchor: 'y' }, yaxis: { domain: [0.42, 1], title: 'Revenue $bn' },
+    xaxis2: { type: 'category', matches: 'x', anchor: 'y2' }, yaxis2: { domain: [0, 0.34], title: 'YoY %', ticksuffix: '%' } }]);
+  draw('st-margin', () => ring() && [[
+    line(x, pc(col('gm')), 'Gross margin', C.s1, {}, mk), line(x, pc(col('op_margin')), 'Operating margin', C.s2, {}, mk), line(x, pc(col('fcf_margin')), 'FCF margin', C.s3, {}, mk),
+  ], { height: 320, xaxis: { type: 'category' }, yaxis: { ticksuffix: '%', hoverformat: '.1f' } }]);
+  draw('st-cash', () => [[
+    { type: 'bar', x, y: bn(col('net_income')), name: 'Net income $bn', marker: { color: C.s1 } },
+    { type: 'bar', x, y: bn(col('fcf')), name: 'Free cash flow $bn', marker: { color: C.s2 } },
+  ], { height: 320, barmode: 'group', bargap: 0.25, bargroupgap: 0.08, xaxis: { type: 'category' }, yaxis: { title: '$bn', hoverformat: '.2f' } }]);
+  draw('st-wc', () => ring() && [[
+    line(x, col('inv_days'), 'Inventory days', C.s1, {}, mk), line(x, col('dso'), 'DSO (receivable days)', C.s2, {}, mk),
+  ], { height: 320, xaxis: { type: 'category' }, yaxis: { title: 'days', hoverformat: '.0f' } }]);
+}
+function renderQuarters(s) {
+  const cols = [['quarter_end', 'Quarter', v => esc(v)], ['revenue', 'Revenue', usd], ['rev_yoy', 'YoY', v => spct(v, 0)], ['rev_qoq', 'QoQ', v => spct(v, 0)],
+    ['gm', 'GM', v => pct(v, 1)], ['op_margin', 'Op margin', v => pct(v, 1)], ['net_income', 'Net income', usd], ['eps_diluted', 'EPS', v => num(v, 2)],
+    ['fcf', 'FCF', usd], ['fcf_margin', 'FCF %', v => pct(v, 1)], ['inv_days', 'Inv days', v => num(v, 0)], ['dso', 'DSO', v => num(v, 0)], ['sbc', 'SBC', usd]];
+  $('#st-table').innerHTML = `<thead><tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}</tr></thead><tbody>${[...s.rows].reverse().map(r =>
+    `<tr>${cols.map(([k, , f]) => `<td>${f(r[k])}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  $('#st-qnote').textContent = `last ${s.rows.length} quarters, newest first`;
+}
+function renderReactions(s) {
+  const R = s.reactions; // [release, timing, reaction_date, move, gap, next5d]
+  if (!R.length) { $('#st-react').innerHTML = '<p class="empty">No earnings releases matched to price history.</p>'; $('#st-react-stats').textContent = ''; return; }
+  draw('st-react', () => [[{
+    type: 'bar', x: R.map(r => r[0]), y: R.map(r => r[3] * 100), name: 'Reaction', marker: { color: R.map(r => r[3] >= 0 ? C.up : C.down) },
+    text: R.map(r => `Release ${r[0]} (${r[1]})<br>Reaction day ${r[2]}: ${spct(r[3])}<br>Gap ${spct(r[4])} · next 5 days ${spct(r[5])}`),
+    textposition: 'none', hovertemplate: '%{text}<extra></extra>',
+  }], { height: 300, showlegend: false, hovermode: 'closest', xaxis: { type: 'category', showspikes: false }, yaxis: { title: 'Reaction-day move', ticksuffix: '%', showspikes: false } }]);
+  updateImplied();
+}
+function updateImplied() {
+  const s = STOCK; if (!s) return;
+  const st = s.reaction_stats, moves = s.reactions.map(r => Math.abs(r[3])), imp = val('st-implied');
+  let h = `<b>${st.n}</b> releases · mean |move| <b>${pct(st.mean_abs, 1)}</b> · median |move| ${pct(st.median_abs, 1)} · SD ${pct(st.sd, 1)}.`;
+  if (imp && imp > 0) {
+    const i = imp / 100, ratio = st.mean_abs / i, exc = moves.filter(m => m > i).length / moves.length;
+    const verdict = exc > 0.45 ? 'history moved more than this implied move more often than a fair price would. Options look cheap on this record.'
+      : exc < 0.33 ? 'history rarely exceeded this implied move. Options look rich on this record.' : 'history is roughly in line with a fairly priced straddle.';
+    h += `<br>Ratio mean |move| / implied = <b>${num(ratio, 2)}</b>. Past moves exceeded ${num(imp, 1)}% in <b>${pct(exc, 0)}</b> of releases (${moves.filter(m => m > i).length}/${moves.length}).
+      If the straddle prices the move fairly, expect about 42% (normal) or 37% (fat-tailed) exceedance. Read: ${verdict} Small sample; treat as a lean, not an edge.`;
+  } else h += ' Enter the options-implied move to compare.';
+  $('#st-react-stats').innerHTML = h;
+}
+$('#st-implied').addEventListener('input', updateImplied);
+function renderDcf(s) {
+  const d = s.dcf, box = $('#dcf-out');
+  if (!d) { box.innerHTML = '<p class="muted">TTM free cash flow (after SBC, if subtracted) is not positive, so a reverse DCF is not meaningful here. Use the scenario projection instead.</p>'; return; }
+  const ws = Object.keys(d.grid).sort(), gs = Object.keys(d.grid[ws[0]]).sort();
+  box.innerHTML = `<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+    <div><div class="note">Growth the price implies (starting FCF growth, fading to terminal over 10y)</div><div class="hero">${isNum(d.implied_growth) ? pct(d.implied_growth, 1) : '> 300%'}</div></div>
+    <dl class="kv"><dt>FCF base (TTM${$('#dcf-sbc').checked ? ' − SBC' : ''})</dt><dd>${usd(d.fcf)}</dd><dt>FCF yield</dt><dd>${pct(d.fcf_yield, 2)}</dd>
+      <dt>Market cap</dt><dd>${usd(d.mcap)}</dd><dt>Net cash</dt><dd>${usd(d.net_cash)}</dd><dt>WACC / terminal g</dt><dd>${pct(d.wacc, 2)} / ${pct(d.tg, 2)}</dd></dl></div>
+    <h3>Value per share by starting growth (columns) and WACC (rows)</h3>
+    <div class="tw"><table class="num"><thead><tr><th>WACC \\ growth</th>${gs.map(g => `<th>${pct(+g, 0)}</th>`).join('')}</tr></thead><tbody>
+    ${ws.map(w => `<tr><td>${pct(+w, 1)}</td>${gs.map(g => { const v = d.grid[w][g]; return `<td class="${v >= d.price ? 'above' : ''}">${num(v, 2)}${v >= d.price ? ' ▲' : ''}</td>`; }).join('')}</tr>`).join('')}
+    </tbody></table></div><p class="note">▲ shaded cells are at or above the current price (${num(d.price, 2)}).</p>`;
+}
+onSubmit('st-form', loadStock);
+onSubmit('dcf-form', () => { if (!STOCK) return; run('p-dcf', async () => { const s = await api('/api/stock?' + stockQuery(STOCK.ticker)); STOCK.dcf = s.dcf; renderDcf(s); }); });
+
+// projection
+function scRow(name = '', prob = '', price = '') {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td class="edit"><input type="text" value="${esc(name)}" aria-label="Scenario name"></td><td class="edit"><input type="number" step="1" value="${esc(prob)}" aria-label="Probability"></td><td class="edit"><input type="number" step="0.01" value="${esc(price)}" aria-label="Price"></td><td><button type="button" class="btn ghost sm" aria-label="Remove scenario">✕</button></td>`;
+  tr.querySelector('button').onclick = () => tr.remove();
+  $('#pj-sc tbody').append(tr);
+}
+const round = v => { const step = v >= 500 ? 10 : v >= 100 ? 5 : v >= 20 ? 1 : 0.5; return Math.round(v / step) * step; };
+function prefillProjection(s) {
+  $('#pj-spot').value = (s.live?.price ?? s.price).toFixed(2);
+  $('#pj-iv').value = (s.realized_vol_1y * 100).toFixed(1);
+  if (s.reaction_stats.mean_abs) $('#pj-event').placeholder = `hist. mean ${pct(s.reaction_stats.mean_abs, 1)}`;
+  $('#pj-levels').value = [0.8, 1, 1.2].map(f => round(s.price * f)).join(', ');
+  $('#pj-sc tbody').innerHTML = '';
+  scRow('Bull', 25, round(s.price * 1.3)); scRow('Base', 50, round(s.price * 1.05)); scRow('Bear', 25, round(s.price * 0.75));
+  $('#pj-out').innerHTML = '';
+}
+$('#pj-add').onclick = () => scRow();
+$('#pj-run').onclick = () => run('p-proj', async () => {
+  const p100 = id => { const v = val(id); return v === null ? null : v / 100; };
+  const scenarios = $$('#pj-sc tbody tr').map(tr => { const [n, p, x] = $$('input', tr).map(i => i.value.trim()); return { name: n || 'scenario', prob: Number(p) / 100, price: x === '' ? null : Number(x) }; })
+    .filter(s => s.price && s.prob > 0);
+  const levels = $('#pj-levels').value.split(/[,\s]+/).map(Number).filter(v => v > 0);
+  const body = { spot: val('pj-spot'), days: val('pj-days') ?? 90, iv: p100('pj-iv'), event_move: p100('pj-event'), iv_down: p100('pj-ivdown'), iv_up: p100('pj-ivup'), scenarios, levels };
+  if (!body.spot || !body.iv) throw new Error('Spot and IV are required.');
+  const r = await api('/api/projection', body);
+  const mine = r.mine;
+  $('#pj-out').innerHTML = `<div class="plot" id="pj-plot"></div><div class="grid g2" style="margin-top:8px">
+    <div><h3>Percentiles at the horizon</h3><div class="tw"><table class="num"><thead><tr><th>Percentile</th><th>Market</th>${mine ? '<th>Yours</th><th>Gap</th>' : ''}</tr></thead><tbody>
+    ${[5, 10, 25, 50, 75, 90, 95].map((q, i) => `<tr><td>p${q}</td><td>${num(r.market.pct[i], 2)}</td>${mine ? `<td>${num(mine.pct[i], 2)}</td><td>${signed(mine.pct[i] - r.market.pct[i], v => num(v, 2))}</td>` : ''}</tr>`).join('')}
+    <tr><td>mean</td><td>${num(r.market.mean, 2)}</td>${mine ? `<td>${num(mine.mean, 2)}</td><td>${signed(mine.mean - r.market.mean, v => num(v, 2))}</td>` : ''}</tr></tbody></table></div></div>
+    <div><h3>Probability of finishing above each level</h3>${r.levels.length ? `<div class="tw"><table class="num"><thead><tr><th>Level</th><th>Market</th>${mine ? '<th>Yours</th><th>Gap (pts)</th>' : ''}</tr></thead><tbody>
+    ${r.levels.map((L, i) => `<tr><td>${num(L, 2)}</td><td>${pct(r.market.p_above[i], 1)}</td>${mine ? `<td>${pct(mine.p_above[i], 1)}</td><td>${signed((mine.p_above[i] - r.market.p_above[i]) * 100, v => num(v, 1))}</td>` : ''}</tr>`).join('')}
+    </tbody></table></div>` : '<p class="muted">Add levels to see probabilities.</p>'}
+    <p class="note">The market curve is risk-neutral (zero drift, includes any volatility premium). The gap, where your view disagrees with it, is the trade idea, not a price target.</p></div></div>`;
+  draw('pj-plot', () => {
+    // step lines, not overlaid bars: two translucent fills blend into a third color that reads as a series
+    const t = [line(r.bins, pc(r.market.hist), 'Market-implied', C.s1, { shape: 'hvh' }, { fill: 'tozeroy', fillcolor: alpha(C.s1, 0.14), hovertemplate: '%{y:.2f}%' })];
+    if (mine) t.push(line(r.bins, pc(mine.hist), 'Your scenarios', C.s2, { shape: 'hvh' }, { hovertemplate: '%{y:.2f}%' }));
+    const shapes = [vline(body.spot, C.ink, 'solid'), ...r.levels.map(L => vline(L))];
+    const ann = [{ x: body.spot, y: 0.97, yref: 'paper', text: `spot ${num(body.spot, 2)}`, xanchor: 'left', yanchor: 'top', xshift: 4, font: { color: C.ink, size: 11 } },
+      ...r.levels.map(L => ({ x: L, y: 1, yref: 'paper', text: num(L, 0), yanchor: 'bottom' }))];
+    return [t, { height: 340, xaxis: { title: `Price in ${body.days} days`, hoverformat: '.2f' }, yaxis: { title: 'Probability per bin', ticksuffix: '%', rangemode: 'tozero' }, shapes, annotations: ann, margin: { l: 8, r: 8, t: 44, b: 8 }, legend: { orientation: 'h', x: 1, xanchor: 'right', y: 1.08, yanchor: 'bottom' } }];
+  });
+});
+INIT.stock = loadStock;
+
+// ------------------------------------------------------------------ 4. scanner
+const UNIS = ['etf-core', 'sectors', 'megacap', 'futures', 'crypto', 'fx'];
+$('#sc-unis').innerHTML = UNIS.map(u => `<label><input type="checkbox" value="${u}" ${u === 'etf-core' || u === 'sectors' ? 'checked' : ''}> ${u}</label>`).join('');
+function clusterDot(k) { const s = SERIES(); return `<span class="dot" style="background:${k >= 1 && k <= 8 ? s[k - 1] : C.muted}"></span>${k}`; }
+function loadScan() {
+  return run('p-scan', async () => {
+    const unis = $$('#sc-unis input:checked').map(i => i.value), syms = $('#sc-syms').value.replace(/\s+/g, '');
+    if (!unis.length && !syms) throw new Error('Pick at least one universe or enter symbols.');
+    const q = new URLSearchParams({ universe: unis.join(','), equity: val('sc-equity') ?? 100000, risk: val('sc-risk') ?? 0.5, top: val('sc-top') ?? 25 });
+    if (syms) q.set('symbols', syms);
+    if ($('#sc-puts').checked) q.set('puts', '1');
+    const r = await api('/api/scan?' + q);
+    SCAN_ROWS = {};
+    const rows = r.ranked.map((x, i) => {
+      const R = x.side === 'short' ? (x.entry - x.target) / (x.stop - x.entry) : (x.target - x.entry) / (x.entry - x.stop);
+      SCAN_ROWS['r' + i] = { symbol: x.sym, side: x.side, etype: 'market', stop: x.stop, target: x.target, qty: x.units || '', setup: x.setup, flatten: '', tif: 'gtc' };
+      return `<tr><td>${i + 1}</td><td><button type="button" class="symbtn" data-sym="${esc(x.sym)}" title="Open in Charts">${esc(x.sym)}</button></td><td style="text-align:left">${esc(x.setup)}</td>
+        <td style="text-align:left">${x.side === 'long' ? '<span class="up">▲ long</span>' : '<span class="down">▼ short</span>'}</td><td><span class="badge ${esc(x.grade)}">${esc(x.grade)}</span></td>
+        <td>${num(x.score, 2)}</td><td>${auto(x.entry)}</td><td>${auto(x.stop)}</td><td>${auto(x.target)}</td><td>${num(R, 1)}R</td>
+        <td>${x.micro ? '0 (micro)' : num(x.units, 0)}${x.capped ? ' *' : ''}</td><td>${pct(x.atr_pct, 1)}</td><td>${usd(x.adv)}</td><td style="text-align:left">${esc((x.also || []).join(', '))}</td><td>${clusterDot(x.cluster)}</td>
+        <td><button type="button" class="btn ghost sm" data-paper="r${i}" title="Fill the paper bracket form">Paper</button></td></tr>`;
+    }).join('');
+    const nCl = new Set(r.ranked.map(x => x.cluster)).size;
+    $('#sc-out').innerHTML = `<h3>Regime</h3>${regimeCards({ ...r.regime, n: r.n })}
+      <h3>${r.ranked.length} ranked ideas · ${nCl} independent clusters</h3>
+      ${r.ranked.length ? `<div class="tw"><table class="num"><thead><tr><th>#</th><th>Symbol</th><th style="text-align:left">Setup</th><th style="text-align:left">Side</th><th>Grade</th><th>Score</th><th>Entry</th><th>Stop</th><th>Target</th><th>Reward</th><th>Units</th><th>ATR %</th><th>Avg $ volume</th><th style="text-align:left">Also</th><th>Cluster</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="empty">No setups passed the filters.</p>'}
+      <p class="note">Grade is the evidence grade of the setup family, not of this chart. Units risk your % of equity to the stop, scaled by the regime dial (* = capped at 25% of equity). Same-colored clusters move together (correlation ≥ 0.7): treat each cluster as one bet. Clusters past 8 are gray; the number identifies them.${r.skipped.length ? ` Skipped (filters or no data): ${esc(r.skipped.join(', '))}.` : ''}</p>
+      ${$('#sc-puts').checked ? putsHTML(r.puts) : ''}`;
+  });
+}
+let SCAN_ROWS = {};
+function putsHTML(list) {
+  if (!list || !list.length) return '<h3>Put positions</h3><p class="empty">No bearish setups in this scan.</p>';
+  const rows = list.map((x, i) => {
+    const p = x.puts;
+    if (p.error) return `<tr><td>${esc(x.sym)}</td><td style="text-align:left">${esc(x.setup)}</td><td colspan="8" class="muted" style="text-align:left">No puts: ${esc(p.error)}</td></tr>`;
+    const lp = p.long_put, sp = p.spread;
+    SCAN_ROWS['p' + i] = { symbol: x.sym, kind: 'put', strike: lp.strike, expiry: p.expiry, stop: x.stop, target: x.target, qty: Math.max(1, lp.contracts), setup: x.setup + '-put', flatten: '', tif: 'gtc', iv: isNum(p.iv) ? +(p.iv * 100).toFixed(0) : '' };
+    return `<tr><td><button type="button" class="symbtn" data-sym="${esc(x.sym)}">${esc(x.sym)}</button></td><td style="text-align:left">${esc(x.setup)}</td><td>${auto(p.spot)}</td><td>${esc(p.expiry)} (${p.days}d)</td><td>${pct(p.iv, 0)}</td>
+      <td>${num(lp.strike, lp.strike % 1 ? 1 : 0)} @ ${num(lp.premium, 2)}<br><span class="muted">${lp.contracts} ct · BE ${auto(lp.breakeven)}</span></td>
+      <td>${sp ? `${num(sp.long, 0)}/${num(sp.short, 0)} @ ${num(sp.debit, 2)}<br><span class="muted">${sp.contracts} ct · max ${num(sp.max_gain, 2)} (${num(sp.rr, 1)}×)</span>` : '–'}</td>
+      <td>${auto(x.stop)}</td><td style="text-align:left">${p.warn.length ? `<span class="muted">${esc(p.warn.join('; '))}</span>` : ''}</td>
+      <td><button type="button" class="btn ghost sm" data-paper="p${i}">Paper</button></td></tr>`;
+  }).join('');
+  return `<h3>Put positions for bearish ideas · risk budget ${usd(list[0].budget)} each</h3>
+    <div class="tw"><table class="num"><thead><tr><th>Symbol</th><th style="text-align:left">Setup</th><th>Spot</th><th>Expiry</th><th>IV</th><th>Buy put</th><th>Bear put spread</th><th>Exit above</th><th style="text-align:left">Cautions</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="note">Bearish candidates are listed even when the regime ranks them out of the top ideas. Premiums at the ask (short leg at the bid) from Yahoo's delayed chain; the premium is the most you can lose. Exit when the stock closes above the setup's stop. Long puts lose to time decay and falling volatility.</p>`;
+}
+$('#sc-out').addEventListener('click', e => {
+  const p = e.target.closest('[data-paper]'); if (p) return paperPrefill(SCAN_ROWS[p.dataset.paper]);
+  const b = e.target.closest('[data-sym]'); if (b) openChart(b.dataset.sym);
+});
+onSubmit('sc-form', loadScan);
+
+// small-cap momentum selection (the user's five criteria)
+const tick = ok => ok ? '<span class="up">✓</span>' : '<span class="muted">·</span>';
+onSubmit('sm-form', () => run('p-small', async () => {
+  const q = new URLSearchParams({ min_change: val('sm-chg') ?? 10, min_rvol: val('sm-rvol') ?? 5, price_lo: val('sm-lo') ?? 2, price_hi: val('sm-hi') ?? 20,
+    max_float: val('sm-float') ?? 20, news_hours: val('sm-news') ?? 24, equity: val('sc-equity') ?? 100000 });
+  const r = await api('/api/smallcap?' + q);
+  const full = r.rows.filter(x => x.met === 5), four = r.rows.filter(x => x.met === 4);
+  const bl = full.length ? `${full.length} stock${full.length > 1 ? 's' : ''} meet all five criteria: ${full.slice(0, 6).map(x => x.symbol).join(', ')}.`
+    : four.length ? `None meets all five; ${four.length} meet four: ${four.slice(0, 6).map(x => x.symbol).join(', ')}.` : 'Nothing meets four or more of your criteria right now.';
+  const rows = r.rows.slice(0, 25).map(x => {
+    const p = x.pillars, c = x.catalyst, fl = x.float;
+    const news = !x.checked ? '<span class="muted">not checked</span>' : c ? `<a href="${esc(c.link)}" target="_blank" rel="noopener noreferrer">${esc(c.title.slice(0, 80))}</a> <span class="muted">${esc(c.publisher)}${c.commentary ? ' (commentary)' : ''}, ${num(c.age_h, 0)} h</span>`
+      : x.list_only ? '<span class="muted">only gainer-list mentions</span>' : '<span class="muted">no recent headline</span>';
+    const dil = (x.dilution || []).length ? `<br><span class="down">Dilution / listing risk: ${esc(x.dilution[0].slice(0, 70))}</span>` : '';
+    return `<tr><td><button type="button" class="symbtn" data-day="${esc(x.symbol)}" title="Open in Day Trading">${esc(x.symbol)}</button></td><td>${num(x.price, 2)}</td><td>${spct(x.change_pct, 0)}</td><td>${num(x.rvol, 1)}×</td>
+      <td>${fl ? num(fl / 1e6, 1) + 'M' : x.checked ? '?' : '–'}</td><td>${tick(p.up)}</td><td>${tick(p.rvol)}</td><td>${x.checked ? tick(p.news) : '?'}</td><td>${tick(p.price)}</td><td>${x.checked ? tick(p.float) : '?'}</td>
+      <td><b>${x.met}</b>/5</td><td style="text-align:left;white-space:normal;min-width:260px">${news}${dil}</td></tr>`;
+  }).join('');
+  SMALL_PLANS = r.plans;
+  const plans = Object.entries(r.plans).map(([s, p]) => p.error ? `<li>${esc(s)}: no intraday plan (${esc(p.error)})</li>`
+    : `<li><b>${esc(s)}</b>: ${esc(p.bottom_line)} <i>${esc(p.action.label)}</i> — ${esc(p.action.flat)} ${p.ticket ? `<button type="button" class="btn ghost sm" data-smpaper="${esc(s)}">Paper</button>` : ''}</li>`).join('');
+  $('#sm-out').innerHTML = `<div class="sum"><span class="stance">${esc(r.state || 'market')}</span><div class="bl">${esc(bl)}</div>
+      <div class="nba"><div class="nba-k">Next best action (rule-based)</div><div class="nba-v">${full.length || four.length ? 'Watch, then trade only the intraday setup' : 'Stand aside'}</div>
+      <p style="margin:0">These are the market's most dangerous trades: thin floats, trading halts that jump stops, and share offerings into spikes. Risk 0.25% or less per trade, and prove it in the paper portfolio first.</p></div></div>
+    ${r.volume_fraction < 1 ? `<p class="note">Relative volume is time-adjusted: a normal day has done about ${pct(r.volume_fraction, 0)} of its volume by now.</p>` : ''}
+    ${r.state === 'PRE' ? '<p class="warn">Before the open, the screener still shows yesterday\'s session. Re-run after 09:30, or use Stocks in play on the Day Trading tab with a pre-market watchlist.</p>' : ''}
+    <div class="tw"><table class="num"><thead><tr><th>Symbol</th><th>Price</th><th>Day</th><th>RVOL</th><th>Float</th><th>Up ≥${num(r.criteria.min_change, 0)}%</th><th>RVOL ≥${num(r.criteria.min_rvol, 0)}×</th><th>News</th><th>$${num(r.criteria.price[0], 0)}–${num(r.criteria.price[1], 0)}</th><th>Float &lt;${num(r.criteria.max_float / 1e6, 0)}M</th><th>Met</th><th style="text-align:left">Catalyst and flags</th></tr></thead><tbody>${rows || '<tr><td colspan="12" class="muted">No gainers in the price band.</td></tr>'}</tbody></table></div>
+    ${plans ? `<h3>Intraday plans for the leaders</h3><ul style="margin:0;padding-left:18px">${plans}</ul>` : ''}
+    <p class="note">${r.n} US-listed gainers checked (OTC excluded); float and news are checked for the 25 most active. Evidence: [Lore]. This is a practitioner screen with no published test. Stocks with extreme one-day gains and heavy retail attention tend to do worse afterwards (Bali, Cakici &amp; Whitelaw 2011; Barber &amp; Odean 2008), so any edge lies in the first minutes and in execution. Yahoo data is about 15 minutes delayed, and float figures can be stale. A "commentary" source is an article about the stock, not the news itself: find the original release.</p>`;
+}));
+let SMALL_PLANS = {};
+$('#sm-out').addEventListener('click', e => {
+  const d = e.target.closest('[data-day]'); if (d) return openDay(d.dataset.day);
+  const p = e.target.closest('[data-smpaper]');
+  if (p) { const t = SMALL_PLANS[p.dataset.smpaper].ticket; paperPrefill({ symbol: p.dataset.smpaper, side: t.side, etype: 'market', stop: t.stop, target: t.target, qty: t.qty || '', setup: 'smallcap', flatten: t.flatten, tif: 'day' }); }
+});
+
+// ------------------------------------------------------------------ 2b. day trading
+let DAY = null;
+function dayQuery() {
+  return new URLSearchParams({ symbol: $('#dy-sym').value.trim().toUpperCase() || 'SPY', interval: $('#dy-int').value, session: $('#dy-sess').value.trim() || '09:30-16:00',
+    equity: val('dy-eq') ?? 50000, risk: val('dy-risk') ?? 0.5, target_r: val('dy-tr') ?? 2 }).toString();
+}
+function loadDay() {
+  const query = dayQuery(), sym = new URLSearchParams(query).get('symbol');
+  return run('p-day', async () => {
+    const [d, q] = await Promise.all([api('/api/day?' + query), getQuote(sym).catch(e => e)]);
+    renderDay(d, query);
+    $('#dy-quote').innerHTML = q instanceof Error ? `<p class="err" style="margin:0">Quote failed: ${esc(q.message)}</p>` : quoteHTML(q);
+  });
+}
+function openDay(sym) { $('#dy-sym').value = sym; started.add('day'); showTab('day'); loadDay(); }
+setInterval(async () => {
+  if (!DAY || !$('#dy-live').checked || $('#tab-day').hidden || document.hidden) return;
+  try {
+    const sym = new URLSearchParams(DAY.query).get('symbol');
+    const [d, q] = await Promise.all([api('/api/day?' + DAY.query), getQuote(sym).catch(e => e)]);
+    renderDay(d, DAY.query);
+    if (!(q instanceof Error)) $('#dy-quote').innerHTML = quoteHTML(q);
+  } catch (e) { console.warn('day refresh failed', e); }
+}, 60000);
+function renderDay(d, query) {
+  DAY = { query, d };
+  const L = d.levels, a = L.action, t = L.ticket;
+  $('#dy-title').textContent = `${d.symbol} · ${d.interval} bars · ${L.date} · ${L.phase} · last bar ${L.time} ${d.tz || ''}`;
+  $('#dy-sum').innerHTML = `<span class="stance">${esc(L.day_type || L.phase)}</span><div class="bl">${esc(L.bottom_line)}</div>
+    <div class="nba"><div class="nba-k">Next best action (rule-based)</div><div class="nba-v">${esc(a.label)}</div>
+      <dl class="kv"><dt>If you're in a trade</dt><dd>${esc(a.in_trade)}</dd><dt>If you're flat</dt><dd>${esc(a.flat)}</dd></dl>
+      ${L.cautions.map(c => `<p class="warn">${esc(c)}</p>`).join('')}</div>
+    <p class="note">Rule-based read on delayed data, not personal advice. Confirm the live price before any order.</p>`;
+  const kv = [['Prior day H / L / C', isNum(L.pdh) ? `${auto(L.pdh)} / ${auto(L.pdl)} / ${auto(L.pdc)}` : null], ['Overnight H / L', isNum(L.onh) ? `${auto(L.onh)} / ${auto(L.onl)}` : null],
+    ['Gap', isNum(L.gap) ? `${spct(L.gap, 2)}${isNum(L.gap_atr) ? ` = ${num(L.gap_atr, 2)} ATR` : ''}${'gap_filled' in L ? (L.gap_filled ? ', filled' : ', not filled') : ''}` : null],
+    ['Daily ATR', isNum(L.atr) ? `${auto(L.atr)}${isNum(L.atr_used) ? ` · ${pct(L.atr_used, 0)} used today` : ''}` : null],
+    ['Open / high / low', isNum(L.open) ? `${auto(L.open)} / ${auto(L.hod)} / ${auto(L.lod)}` : null],
+    ...(L.ors || []).map(o => [`Opening range ${o.n} min`, `${auto(o.lo)} – ${auto(o.hi)}${o.complete ? '' : ` (forming until ${o.end})`}`]),
+    ['VWAP', isNum(L.vwap) ? `${auto(L.vwap)} · ±1σ ${auto(L.vwap - L.vwap_sd)}–${auto(L.vwap + L.vwap_sd)} · ${L.vwap_crosses} crosses` : null],
+    ['Relative volume', isNum(L.rvol) ? `${num(L.rvol, 2)}× the ${L.rvol_days}-day average to this time` : null],
+    ['Round numbers', L.round && isNum(L.round[0]) ? `${auto(L.round[0])} / ${auto(L.round[1])}` : null]].filter(r => r[1]);
+  $('#dy-levels').innerHTML = kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  $('#dy-ticket').innerHTML = t ? `<h3>Bracket ticket</h3><div class="card"><div class="k">${t.side === 'long' ? 'Buy' : 'Sell short'} ${t.qty != null ? num(t.qty, 0) + ' shares' : ''}</div>
+      <dl class="kv" style="margin-top:6px"><dt>Entry</dt><dd>${auto(t.entry)} (${esc(t.entry_type)})</dd><dt>Stop-loss</dt><dd>${auto(t.stop)} <span class="muted">${esc(t.stop_note)}</span></dd>
+      <dt>Take-profit</dt><dd>${auto(t.target)} (${num(t.target_r, 1)}R)</dd><dt>Flatten</dt><dd>${esc(t.flatten)} if neither fills</dd>${isNum(t.risk_cash) ? `<dt>Risk / notional</dt><dd>${usd(t.risk_cash)} / ${usd(t.notional)}</dd>` : ''}</dl>
+      <div style="margin-top:8px"><button type="button" class="btn sm" id="dy-paper">Paper trade this</button></div></div>
+      <p class="note">The published opening-range rules held to the close (10R). A 2R take-profit trades payoff for hit rate; test both below.</p>` : '<h3>Bracket ticket</h3><p class="empty">No setup right now: the ticket appears when price and VWAP agree outside the opening range.</p>';
+  if (t) $('#dy-paper').onclick = () => paperPrefill({ symbol: d.symbol, side: t.side, etype: 'market', stop: +t.stop.toFixed(4), target: +t.target.toFixed(4), qty: t.qty ?? '', setup: 'orb', flatten: t.flatten, tif: 'day' });
+  $('#dy-note').textContent = (d.volume_fixed ? `Repaired ${d.volume_fixed} bar volumes where Yahoo reported a running total. ` : '') + 'Gray candles are pre-market and after-hours; levels are drawn over the latest session.';
+  const c = d.chart, x = c.date, part = k => [c[k].map((v, i) => c.ext[i] ? null : v), c[k].map((v, i) => c.ext[i] ? v : null)];
+  const [o1, o2] = part('open'), [h1, h2] = part('high'), [l1, l2] = part('low'), [c1, c2] = part('close');
+  const i0 = Math.max(0, x.findIndex(s => s.startsWith(L.date))), x0 = x[i0], x1 = x.at(-1);
+  const lv = [['Prior high', L.pdh, C.s3], ['Prior low', L.pdl, C.s3], ['Prior close', L.pdc, C.muted], ['ON high', L.onh, C.s4], ['ON low', L.onl, C.s4]];
+  const orp = (L.ors || [])[0]; if (orp) lv.push([`OR${orp.n} high`, orp.hi, C.s7], [`OR${orp.n} low`, orp.lo, C.s7]);
+  if (t) lv.push(['Stop', t.stop, C.down], ['Target', t.target, C.up]);
+  const shown = lv.filter(r => isNum(r[1]));
+  const band = (k, s) => c.vwap.map((v, i) => isNum(v) ? v + k * c.sd[i] : null);
+  const ticks = sessionTicks(x);
+  draw('dy-plot', () => [[
+      line(x, band(2), 'VWAP ±2σ', C.muted, { width: 1, dash: 'dot' }, { legendgroup: 'b2' }), line(x, band(-2), 'VWAP −2σ', C.muted, { width: 1, dash: 'dot' }, { legendgroup: 'b2', showlegend: false }),
+      line(x, band(1), 'VWAP ±1σ', C.muted, { width: 1, dash: 'dash' }, { legendgroup: 'b1' }), line(x, band(-1), 'VWAP −1σ', C.muted, { width: 1, dash: 'dash' }, { legendgroup: 'b1', showlegend: false }),
+      candles(x, o1, h1, l1, c1),
+      candles(x, o2, h2, l2, c2, { name: 'Extended hours', increasing: { line: { color: C.muted, width: 1 }, fillcolor: C.surface }, decreasing: { line: { color: C.muted, width: 1 }, fillcolor: C.muted } }),
+      line(x, c.vwap, 'VWAP', C.s2, { width: 2 }),
+      { type: 'bar', x, y: c.volume, name: 'Volume', marker: { color: c.ext.map(e => alpha(C.muted, e ? 0.3 : 0.6)) }, xaxis: 'x2', yaxis: 'y2', showlegend: false },
+    ], {
+      height: 600, uirevision: query,
+      xaxis: { type: 'category', ...ticks, rangeslider: { visible: false }, showticklabels: false, anchor: 'y' },
+      yaxis: { domain: [0.24, 1], side: 'right', hoverformat: '.2f' },
+      xaxis2: { type: 'category', ...ticks, matches: 'x', anchor: 'y2' },
+      yaxis2: { domain: [0, 0.2], side: 'right', title: 'Volume' },
+      shapes: shown.map(([, y, col]) => ({ type: 'line', xref: 'x', yref: 'y', x0, x1, y0: y, y1: y, line: { color: col, width: 1, dash: 'dash' } })),
+      annotations: shown.map(([n, y, col]) => ({ xref: 'x', x: x1, xanchor: 'right', yref: 'y', y, yanchor: 'bottom', text: `${n} ${auto(y)}`, font: { size: 10.5, color: col }, bgcolor: alpha(C.surface, 0.8) })),
+    }]);
+}
+INIT.day = loadDay;
+onSubmit('dy-form', loadDay);
+
+$('#ip-unis').innerHTML = UNIS.slice(0, 3).map(u => `<label><input type="checkbox" value="${u}" ${u === 'megacap' ? 'checked' : ''}> ${u}</label>`).join('');
+onSubmit('ip-form', () => run('p-inplay', async () => {
+  const q = new URLSearchParams({ universe: $$('#ip-unis input:checked').map(i => i.value).join(','), symbols: $('#ip-syms').value.replace(/\s+/g, '') });
+  const r = await api('/api/inplay?' + q);
+  const n = r.rows.filter(x => x.in_play).length;
+  $('#ip-out').innerHTML = `<p class="note">${n} of ${r.rows.length} pass the stocks-in-play filters (price &gt; $5, average volume ≥ 1M, ATR ≥ $0.50, relative volume ≥ 1). Click a symbol for its levels.</p>
+    <div class="tw"><table class="num"><thead><tr><th>Symbol</th><th>Time</th><th>Price</th><th>Gap</th><th>Gap / ATR</th><th>RVOL</th><th>ATR</th><th>Avg volume</th><th>vs opening range</th><th>vs VWAP</th><th></th></tr></thead><tbody>
+    ${r.rows.map(x => `<tr${x.in_play ? ' class="above"' : ''}><td><button type="button" class="symbtn" data-day="${esc(x.sym)}">${esc(x.sym)}</button></td><td>${esc(x.time)}</td><td>${auto(x.price)}</td><td>${spct(x.gap, 1)}</td><td>${num(x.gap_atr, 2)}</td>
+      <td>${num(x.rvol, 2)}×</td><td>${auto(x.atr)}</td><td>${big(x.adv)}</td><td>${esc(x.or || '–')}</td><td>${esc(x.vwap_side || '–')}</td><td style="text-align:left">${x.in_play ? '<b>in play</b>' : x.liquid ? '' : '<span class="muted">illiquid</span>'}</td></tr>`).join('')}
+    </tbody></table></div>${r.errors.length ? `<p class="note">Skipped: ${esc(r.errors.map(e => e.sym).join(', '))}.</p>` : ''}
+    <p class="note">Screen from Zarattini, Barbon &amp; Aziz's "stocks in play" [Weak, vendor study]. Relative volume compares today to the same time of day over the last 14 sessions. Confirm the catalyst before trading.</p>`;
+}));
+$('#ip-out').addEventListener('click', e => { const b = e.target.closest('[data-day]'); if (b) openDay(b.dataset.day); });
+
+$('#bt-int').addEventListener('change', () => { $('#bt-or').value = $('#bt-int').value === '1h' ? 60 : 5; });
+onSubmit('bt-form', () => run('p-dbt', async () => {
+  const q = new URLSearchParams({ symbol: $('#bt-sym').value.trim().toUpperCase() || 'SPY', interval: $('#bt-int').value, rule: $('#bt-rule').value, or: val('bt-or') ?? 5,
+    mode: $('#bt-mode').value, target_r: val('bt-tr') ?? 10, cost: val('bt-cost') ?? 1 });
+  if ($('#bt-long').checked) q.set('long_only', '1');
+  const r = await api('/api/day/backtest?' + q);
+  $('#bt-out').textContent = r.text; $('#bt-out').classList.remove('empty');
+  draw('bt-plot', () => [[line(r.curve.map(p => p[0]), r.curve.map(p => p[1] * 100), 'Strategy equity (% return)', C.s1, { width: 2 }, { fill: 'tozeroy', fillcolor: alpha(C.s1, 0.08) })],
+    { height: 260, yaxis: { side: 'right', ticksuffix: '%', hoverformat: '.2f' }, xaxis: { rangebreaks: breaks(r.curve.map(p => p[0])) }, shapes: [hline(0)] }]);
+}));
+
+// ------------------------------------------------------------------ 4b. paper portfolio
+let PAPER = null;
+function syncPaperForm() {
+  const opt = $('#po-kind').value !== 'stock';
+  $$('#po-form .opt').forEach(l => { l.hidden = !opt; });
+  $('#po-side-l').hidden = opt;
+  $('#po-epx-l').hidden = $('#po-etype').value === 'market';
+  if (opt) $('#po-etype').value = 'market';
+  $('#po-etype').disabled = opt;
+}
+$('#po-kind').addEventListener('change', syncPaperForm);
+$('#po-etype').addEventListener('change', syncPaperForm);
+function paperPrefill(o) {
+  $('#po-sym').value = o.symbol; $('#po-kind').value = o.kind || 'stock'; $('#po-side').value = o.side || 'long';
+  $('#po-strike').value = o.strike ?? ''; $('#po-exp').value = o.expiry ?? ''; $('#po-iv').value = o.iv ?? '';
+  $('#po-etype').value = o.etype || 'market'; $('#po-epx').value = o.entry ?? '';
+  $('#po-stop').value = o.stop ?? ''; $('#po-tgt').value = o.target ?? ''; $('#po-tr').value = ''; $('#po-qty').value = o.qty ?? '';
+  $('#po-flat').value = o.flatten ?? ''; $('#po-tif').value = o.tif || 'day'; $('#po-setup').value = o.setup || '';
+  syncPaperForm();
+  started.add('paper'); showTab('paper'); loadPaper();
+  $('#po-out').innerHTML = '<p class="note">Form filled from the idea. Check the numbers, then press Place bracket.</p>';
+  $('#p-porder').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function renderPaper(s) {
+  PAPER = s;
+  if (!s.exists) {
+    $('#pa-acct').innerHTML = `<p>Start a paper account to record simulated trades. Fills come from real 1-minute bars, so stops, targets and gaps behave as they would have.</p>
+      <form class="form" id="pa-init"><label>Starting equity<input type="number" id="pa-eq" value="100000" step="1000"></label><label>Commission / share<input type="number" id="pa-cs" value="0" step="0.001"></label>
+      <label>Commission / contract<input type="number" id="pa-cc" value="0.65" step="0.05"></label><label>Slippage bps<input type="number" id="pa-sl" value="2" step="0.5"></label>
+      <label>Max risk / trade %<input type="number" id="pa-mr" value="1" step="0.25"></label><label>Max total risk %<input type="number" id="pa-mh" value="6" step="0.5"></label><button class="btn">Start account</button></form>`;
+    $('#pa-init').noValidate = true;
+    onSubmit('pa-init', () => run('p-pacct', async () => renderPaper(await api('/api/paper/init', { equity: val('pa-eq'), commission_share: val('pa-cs'), commission_contract: val('pa-cc'), slippage_bps: val('pa-sl'), max_risk: val('pa-mr'), max_heat: val('pa-mh') }))));
+    $('#pp-out').innerHTML = '<p class="empty">No account yet.</p>';
+    return;
+  }
+  const card = (k, v, sub) => `<div class="card"><div class="k">${k}</div><div class="v" style="text-transform:none">${v}</div><div class="sub">${sub}</div></div>`;
+  const st = s.stats;
+  $('#pa-acct').innerHTML = `<div class="sum" style="max-width:none"><div class="bl" style="margin-top:0">${esc(s.bottom_line)}</div></div>
+    <div class="cards">${card('Equity', '$' + num(s.equity, 0), `cash $${num(s.cash, 0)} · started $${num(s.start_equity, 0)}`)}${card('Total P&amp;L', signed(s.total_pnl, v => num(v, 0)), `${spct(s.total_ret, 2)} · realized ${num(s.realized, 0)}, open ${num(s.unrealized, 0)}`)}
+      ${card('Open risk', pct(s.heat_pct, 2), `${usd(s.open_risk)} to the stops (cap ${num(s.settings.max_heat_pct, 0)}%)`)}${card('Closed trades', st.n, st.n ? `${pct(st.win, 0)} winners · ${isNum(st.exp_R) ? num(st.exp_R, 2) + 'R' : '–'} per trade` : 'none yet')}
+      ${card('Day trades', s.day_trades_5d, 'last 5 business days')}</div>
+    <div class="plot" id="pa-curve" style="margin-top:10px"></div>
+    <p class="note">Last update ${esc(s.last_update || 'never')}. Paper fills are kinder than real ones: no queue position, partial fills or halts. Book: trader-ui/data/paper_book.json.
+      <button type="button" class="btn ghost sm" id="pa-reset">Reset account</button></p>`;
+  $('#pa-reset').onclick = async () => { if (confirm('Start over? This erases every paper trade and position.')) run('p-pacct', async () => renderPaper(await api('/api/paper/init', { equity: s.start_equity }))); };
+  const ec = s.equity_curve;
+  draw('pa-curve', () => [[line(ec.map(p => new Date(p[0] * 1000)), ec.map(p => p[1]), 'Equity', C.s1, { width: 2, shape: 'hv' })], { height: 220, yaxis: { side: 'right', hoverformat: ',.0f' }, shapes: [hline(s.start_equity)] }]);
+  const pos = s.positions.map(p => `<tr><td>${p.id}</td><td style="text-align:left">${esc(p.contract)}</td><td style="text-align:left">${p.side === 'long' ? '<span class="up">long</span>' : '<span class="down">short</span>'}</td><td>${num(p.qty, 0)}</td>
+      <td>${auto(p.entry)}</td><td>${auto(p.mark)}<br><span class="muted">${esc(p.mark_src)}</span></td><td>${signed(p.upnl, v => num(v, 0))}</td><td>${isNum(p.R) ? num(p.R, 2) + 'R' : '–'}</td><td>${auto(p.stop)}</td><td>${auto(p.target)}</td><td>${esc(p.flatten || '–')}</td>
+      <td>${esc(p.entry_time)}</td><td><button type="button" class="btn ghost sm" data-close="${p.id}">Close</button></td></tr>`).join('');
+  const ords = s.orders.map(o => `<tr><td>${o.id}</td><td style="text-align:left">${esc(o.contract)}</td><td style="text-align:left">${esc(o.side)}</td><td>${num(o.qty, 0)}</td><td>${esc(o.entry.type)} ${o.entry.price != null ? auto(o.entry.price) : ''}</td>
+      <td>${auto(o.stop)}</td><td>${auto(o.target)}</td><td>${esc(o.tif)}</td><td>${esc(o.created)}</td><td><button type="button" class="btn ghost sm" data-cancel="${o.id}">Cancel</button></td></tr>`).join('');
+  const trs = s.trades.map(t => `<tr><td>${t.id}</td><td style="text-align:left">${esc(t.contract)}</td><td style="text-align:left">${esc(t.side)}</td><td>${num(t.qty, 0)}</td><td>${esc(t.entry_time)}</td><td>${auto(t.entry_price)}</td>
+      <td>${esc(t.exit_time.slice(5))}</td><td>${auto(t.exit_price)}</td><td>${signed(t.pnl, v => num(v, 2))}</td><td>${isNum(t.R) ? num(t.R, 2) + 'R' : '–'}</td><td style="text-align:left">${esc(t.reason)}</td><td style="text-align:left">${esc(t.setup)}</td></tr>`).join('');
+  $('#pp-out').innerHTML = `<h3>Open positions</h3>${pos ? `<div class="tw"><table class="num"><thead><tr><th>#</th><th style="text-align:left">Position</th><th style="text-align:left">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>P&amp;L</th><th>Now</th><th>Stop</th><th>Target</th><th>Flatten</th><th>Opened</th><th></th></tr></thead><tbody>${pos}</tbody></table></div>` : '<p class="empty">None.</p>'}
+    <h3>Working orders</h3>${ords ? `<div class="tw"><table class="num"><thead><tr><th>#</th><th style="text-align:left">Contract</th><th style="text-align:left">Side</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>TIF</th><th>Placed</th><th></th></tr></thead><tbody>${ords}</tbody></table></div>` : '<p class="empty">None.</p>'}
+    <h3>Closed trades (latest first)</h3>${trs ? `<div class="tw"><table class="num"><thead><tr><th>#</th><th style="text-align:left">Contract</th><th style="text-align:left">Side</th><th>Qty</th><th>Opened</th><th>Entry</th><th>Closed</th><th>Exit</th><th>P&amp;L</th><th>R</th><th style="text-align:left">Exit reason</th><th style="text-align:left">Setup</th></tr></thead><tbody>${trs}</tbody></table></div>` : '<p class="empty">None yet.</p>'}
+    <details><summary>Activity log</summary><ul>${s.log.map(([t, m]) => `<li><span class="muted">${esc(t)}</span> ${esc(m)}</li>`).join('')}</ul></details>
+    <p class="note">Export for a journal review: <code>python master-trader/scripts/paperkit.py --book trader-ui/data/paper_book.json trades --csv trades.csv</code>, then <code>daykit.py journal trades.csv</code>.</p>`;
+}
+function loadPaper() { return run('p-pacct', async () => renderPaper(await api('/api/paper'))); }
+function updatePaper() {
+  return run('p-pacct', async () => {
+    const r = await api('/api/paper/update', {});
+    renderPaper(r);
+    if (r.events && r.events.length) $('#po-out').innerHTML = `<p class="note">Update: ${esc(r.events.join(' · '))}</p>`;
+  });
+}
+$('#pa-update').onclick = updatePaper;
+setInterval(() => { if (PAPER?.exists && $('#pa-auto').checked && !$('#tab-paper').hidden && !document.hidden && (PAPER.positions.length || PAPER.orders.length)) updatePaper(); }, 60000);
+$('#pp-out').addEventListener('click', e => {
+  const c = e.target.closest('[data-close]'), k = e.target.closest('[data-cancel]');
+  if (c && confirm(`Close position #${c.dataset.close} at the market?`)) run('p-ppos', async () => renderPaper(await api('/api/paper/close', { ref: c.dataset.close })));
+  if (k) run('p-ppos', async () => renderPaper(await api('/api/paper/cancel', { id: +k.dataset.cancel })));
+});
+onSubmit('po-form', () => run('p-porder', async () => {
+  const kind = $('#po-kind').value, et = $('#po-etype').value;
+  const body = { symbol: $('#po-sym').value.trim().toUpperCase(), side: kind === 'stock' ? $('#po-side').value : 'long', right: kind === 'stock' ? null : kind,
+    strike: val('po-strike'), expiry: $('#po-exp').value.trim() || null, iv: isNum(val('po-iv')) ? val('po-iv') / 100 : null,
+    entry: et === 'market' ? 'market' : `${et}:${val('po-epx')}`, stop: val('po-stop'), target: val('po-tgt'), target_r: val('po-tr'),
+    qty: val('po-qty'), risk_pct: isNum(val('po-qty')) ? null : val('po-risk'), flatten: $('#po-flat').value.trim() || null, tif: $('#po-tif').value,
+    setup: $('#po-setup').value.trim(), force: $('#po-force').checked };
+  if (!body.symbol) throw new Error('Enter a symbol.');
+  if (et !== 'market' && !isNum(val('po-epx'))) throw new Error('Enter the entry price for a limit or stop entry.');
+  const r = await api('/api/paper/order', body);
+  renderPaper(r);
+  $('#po-out').innerHTML = `<p class="note"><b>Order #${r.placed} placed.</b> ${esc((r.notes || []).join(' '))}</p>`;
+}));
+INIT.paper = () => { syncPaperForm(); loadPaper(); };
+
+// ------------------------------------------------------------------ 5. strategy lab
+onSubmit('lab-form', () => run('p-lab', async () => {
+  const q = new URLSearchParams({ symbols: $('#lab-syms').value.replace(/\s+/g, '') });
+  if ($('#lab-short').checked) q.set('short', '1');
+  $('#lab-out').textContent = 'Running… (up to a minute on first run)';
+  $('#lab-out').classList.remove('empty');
+  try { $('#lab-out').textContent = (await api('/api/select?' + q)).text; } catch (e) { $('#lab-out').textContent = '–'; throw e; }
+}));
+
+// ------------------------------------------------------------------ 6. options
+function legRow(type = 'call', strike = '', qty = 1, premium = '') {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td class="edit"><select aria-label="Leg type">${['call', 'put', 'stock'].map(t => `<option ${t === type ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+    <td class="edit"><input type="number" step="0.5" value="${strike}" aria-label="Strike"></td><td class="edit"><input type="number" step="1" value="${qty}" aria-label="Quantity"></td>
+    <td class="edit"><input type="number" step="0.01" value="${premium}" placeholder="BS" aria-label="Premium"></td><td><button type="button" class="btn ghost sm" aria-label="Remove leg">✕</button></td>`;
+  tr.querySelector('button').onclick = () => tr.remove();
+  const sync = () => { tr.children[1].querySelector('input').disabled = tr.querySelector('select').value === 'stock'; };
+  tr.querySelector('select').onchange = sync; sync();
+  $('#op-legs tbody').append(tr);
+}
+const strikeStep = S => S >= 5000 ? 100 : S >= 1000 ? 25 : S >= 500 ? 10 : S >= 100 ? 5 : S >= 25 ? 1 : S >= 5 ? 0.5 : S >= 1 ? 0.01 : 0.001;
+const K = f => { const S = val('op-spot') || 100, st = strikeStep(S); return +(Math.round(S * f / st) * st).toFixed(st < 1 ? 3 : 0); };
+const PRESETS = {
+  'Long call': () => [['call', K(1), 1]],
+  'Bull call spread': () => [['call', K(1), 1], ['call', K(1.05), -1]],
+  'Bear put spread': () => [['put', K(1), 1], ['put', K(0.95), -1]],
+  'Iron condor': () => [['put', K(0.90), 1], ['put', K(0.95), -1], ['call', K(1.05), -1], ['call', K(1.10), 1]],
+  'Collar': () => [['stock', '', 100], ['put', K(0.95), 1], ['call', K(1.05), -1]],
+  'Straddle': () => [['call', K(1), 1], ['put', K(1), 1]],
+};
+$('#op-presets').innerHTML = Object.keys(PRESETS).map(n => `<button type="button" class="btn ghost sm" data-preset="${n}">${n}</button>`).join('');
+let lastPreset = 'Bull call spread', optSym = null;
+function applyPreset(name) { lastPreset = name; $('#op-legs tbody').innerHTML = ''; PRESETS[name]().forEach(l => legRow(...l)); }
+$('#op-presets').addEventListener('click', e => { const b = e.target.closest('[data-preset]'); if (!b) return; applyPreset(b.dataset.preset); runPayoff(); });
+// Symbol -> live spot + 1-month realized vol (free data has no implied vol), strikes rebuilt around the new spot.
+async function loadOptSymbol() {
+  const sym = $('#op-sym').value.trim().toUpperCase() || 'SPY';
+  let ok = false;
+  await run('p-pay', async () => {
+    const [q, p] = await Promise.all([getQuote(sym), api(`/api/prices?symbol=${encodeURIComponent(sym)}&years=0.5`)]);
+    const c = p.close.filter(isNum), lr = [];
+    for (let i = Math.max(1, c.length - 21); i < c.length; i++) lr.push(Math.log(c[i] / c[i - 1]));
+    const m = lr.reduce((a, b) => a + b, 0) / lr.length;
+    const vol = Math.sqrt(lr.reduce((a, b) => a + (b - m) ** 2, 0) / (lr.length - 1) * (q.type === 'CRYPTOCURRENCY' ? 365 : 252));
+    const spot = q.price, d = spot < 10 ? 4 : 2;
+    $('#op-spot').value = spot.toFixed(d); $('#op-vol').value = (vol * 100).toFixed(1);
+    $('#mv-S').value = spot.toFixed(d); $('#mv-vol').value = (vol * 100).toFixed(1);
+    $('#op-src').innerHTML = `<b>${esc(q.symbol)}</b> ${esc(q.name)} · spot ${num(spot, d)} (<span class="state ${esc(q.state.replace(' ', '-'))}">${esc(q.state)}</span>, ${esc(q.time?.slice(11, 16))} ${esc(q.tz)}, ${ago(q.age_s)})
+      · vol ${pct(vol, 1)} = last month's realized vol. Free data has no implied vol, so type the option's IV in Vol % if you have it.`;
+    optSym = sym; ok = true;
+  });
+  if (ok) { applyPreset(lastPreset); await runPayoff(); }
+}
+$('#op-load').onclick = loadOptSymbol;
+// Enter in the form: a new symbol loads it, otherwise recompute (without this the form submit reloads the page)
+onSubmit('op-form', () => { const s = $('#op-sym').value.trim().toUpperCase(); return s && s !== optSym ? loadOptSymbol() : runPayoff(); });
+$('#op-add').onclick = () => legRow('call', K(1), 1);
+function crossings(x, y) { const out = []; for (let i = 1; i < y.length; i++) if ((y[i - 1] < 0) !== (y[i] < 0)) out.push(x[i - 1] + (x[i] - x[i - 1]) * (-y[i - 1]) / (y[i] - y[i - 1])); return out; }
+function runPayoff() {
+  return run('p-pay', async () => {
+    const legs = $$('#op-legs tbody tr').map(tr => { const [s, k, q, p] = [tr.querySelector('select').value, ...$$('input', tr).map(i => i.value.trim())]; return { type: s, strike: k === '' ? null : Number(k), qty: Number(q), premium: p === '' ? null : Number(p) }; })
+      .filter(l => l.qty);
+    if (!legs.length) throw new Error('Add at least one leg (or pick a preset).');
+    if (legs.some(l => l.type !== 'stock' && !l.strike)) throw new Error('Every option leg needs a strike.');
+    const body = { spot: val('op-spot'), days: val('op-days') ?? 30, vol: (val('op-vol') ?? 25) / 100, r: (val('op-r') ?? 4) / 100, legs };
+    const r = await api('/api/payoff', body);
+    const be = crossings(r.grid, r.expiry), mx = Math.max(...r.expiry), mn = Math.min(...r.expiry);
+    const edgeUp = r.expiry.at(-1) > r.expiry.at(-2) + 1e-9, edgeDn = r.expiry[0] > r.expiry[1] + 1e-9;
+    const g = r.greeks, np = r.net_premium;
+    $('#op-out').innerHTML = `<div class="plot" id="op-plot"></div><div class="grid g2" style="margin-top:8px">
+      <dl class="kv"><dt>Net premium</dt><dd>${np >= 0 ? 'debit' : 'credit'} ${num(Math.abs(np), 2)}</dd>
+        <dt>Max profit (in chart range)</dt><dd>${num(mx, 2)}${edgeUp || edgeDn ? ' (still rising at the edge: open-ended)' : ''}</dd>
+        <dt>Max loss (in chart range)</dt><dd>${num(mn, 2)}</dd><dt>Breakevens at expiry</dt><dd>${be.length ? be.map(v => num(v, 2)).join(', ') : 'none in range'}</dd>
+        <dt>Position delta</dt><dd>${num(g.delta, 1)} shares</dd><dt>Gamma</dt><dd>${num(g.gamma, 2)} per $1</dd><dt>Vega</dt><dd>${num(g.vega_1pt, 2)} per vol point</dd><dt>Theta</dt><dd>${num(g.theta_day, 2)} per day</dd></dl>
+      <div class="tw"><table class="num"><thead><tr><th>Leg</th><th>Strike</th><th>Qty</th><th>Premium</th><th>Delta</th><th>Theta/day</th></tr></thead><tbody>
+      ${r.legs.map(l => `<tr><td>${esc(l.type)}</td><td>${l.strike === null ? '–' : num(l.strike, 2)}</td><td>${num(l.qty, 0)}</td><td>${num(l.premium, 2)}</td><td>${l.type === 'stock' ? '1.00' : num(l.delta, 2)}</td><td>${l.type === 'stock' ? '–' : num(l.theta_day, 3)}</td></tr>`).join('')}</tbody></table></div></div>`;
+    draw('op-plot', () => [[
+      line(r.grid, r.expiry, 'At expiry', C.s1), line(r.grid, r.today, `Today (${body.days}d left)`, C.s2, { dash: 'dash' }),
+    ], { height: 360, xaxis: { title: 'Underlying price at the time shown', hoverformat: '.2f' }, yaxis: { title: 'P&L $', zeroline: true, zerolinewidth: 1.5, hoverformat: ',.0f' },
+      shapes: [vline(body.spot, C.ink, 'dot'), ...be.map(v => vline(v, C.muted, 'dot'))], annotations: [{ x: body.spot, y: 1, yref: 'paper', yanchor: 'bottom', text: 'spot' }] }]);
+  });
+}
+$('#op-run').onclick = runPayoff;
+INIT.options = loadOptSymbol;
+onSubmit('mv-form', () => run('p-move', async () => {
+  const p100 = id => { const v = val(id); return v === null ? null : v / 100; };
+  const args = { S: val('mv-S'), days: val('mv-days'), vol: p100('mv-vol'), straddle: val('mv-straddle'), 'event-vol': p100('mv-event'), 'base-vol': p100('mv-base') };
+  if (args.straddle) args.vol = null;
+  $('#mv-out').classList.remove('empty');
+  $('#mv-out').textContent = (await api('/api/run', { kit: 'tradekit.py', cmd: 'move', args })).text;
+}));
+
+// ------------------------------------------------------------------ 7. risk
+const RISK = [
+  ['size', 'Position size', 'Units from a fixed % risk budget and a stop (or an ATR multiple).',
+    [['equity', 'Equity', 100000], ['risk', 'Risk %', 0.5], ['entry', 'Entry', 100], ['stop', 'Stop', 95], ['atr', 'ATR (instead of stop)', ''], ['atr-mult', 'ATR multiple', 2],
+      ['side', 'Side', ['long', 'short']], ['target', 'Target', ''], ['multiplier', 'Point value', 1], ['lot', 'Lot size', 1], ['max-lev', 'Max leverage', 2]]],
+  ['kelly', 'Kelly fraction', 'Either win rate + payoff ratio, or expected return + vol. Size at a fraction of Kelly, never full.',
+    [['p', 'Win prob (0–1)', 0.45], ['b', 'Payoff ratio', 2], ['mu', 'Exp. annual return', ''], ['sigma', 'Annual vol', ''], ['rf', 'Risk-free', 0]]],
+  ['expectancy', 'Expectancy', 'Expectancy in R and how many trades it takes to tell the edge from luck.',
+    [['p', 'Win prob (0–1)', 0.45], ['win', 'Avg win (R)', 2], ['loss', 'Avg loss (R)', 1], ['trades', 'Trades so far', '']]],
+  ['ruin', 'Risk of ruin', 'Monte Carlo probability of hitting a drawdown limit.',
+    [['p', 'Win prob (0–1)', 0.45], ['b', 'Payoff ratio', 2], ['risk', 'Risk % per trade', 1], ['trades', 'Trades', 250], ['limit', 'Ruin drawdown %', 30], ['sims', 'Simulations', 5000], ['fixed', 'Fixed $ risk (no compounding)', false]]],
+  ['drawdown', 'Drawdown math', 'Gain needed to recover each loss, and the expected max drawdown for a Sharpe and vol.',
+    [['loss', 'Losses % (space-separated)', '10 20 30 50'], ['sharpe', 'Sharpe', 1], ['vol', 'Annual vol', 0.15], ['years', 'Years', 10]]],
+  ['sharpe', 'Sharpe significance', 'Probabilistic and deflated Sharpe, and minimum track record length.',
+    [['sr', 'Annual Sharpe', 1.2], ['n', 'Observations', 756], ['ppy', 'Periods / year', 252], ['skew', 'Skew', 0], ['kurt', 'Kurtosis (normal = 3)', 3], ['trials', 'Variants tried', 1], ['var-sr', 'Var of Sharpes across trials', ''], ['bench', 'Benchmark Sharpe', 0]]],
+];
+$('#risk-forms').innerHTML = RISK.map(([cmd, title, note, fields]) => `<section class="panel" id="p-risk-${cmd}"><header><h2>${title}</h2><span class="spin"></span><span class="stamp"></span></header><div class="err" hidden></div>
+  <p class="note" style="margin-top:0">${note}</p><form class="form" data-cmd="${cmd}">${fields.map(([f, l, v]) => Array.isArray(v)
+    ? `<label>${l}<select name="${f}">${v.map(o => `<option>${o}</option>`).join('')}</select></label>`
+    : typeof v === 'boolean' ? `<label class="check"><input type="checkbox" name="${f}" ${v ? 'checked' : ''}> ${l}</label>`
+    : `<label>${l}<input type="${f === 'loss' && cmd === 'drawdown' ? 'text' : 'number'}" step="any" name="${f}" value="${v}"></label>`).join('')}<button class="btn">Run</button></form>
+  <div class="body"><pre class="empty">–</pre></div></section>`).join('');
+$('#risk-forms').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = e.target, cmd = f.dataset.cmd, args = {};
+  for (const el of f.elements) {
+    if (!el.name) continue;
+    if (el.type === 'checkbox') { if (el.checked) args[el.name] = true; } else if (el.value.trim() !== '') args[el.name] = el.value.trim();
+  }
+  run('p-risk-' + cmd, async () => { const pre = $(`#p-risk-${cmd} pre`); pre.classList.remove('empty'); pre.textContent = (await api('/api/run', { kit: 'tradekit.py', cmd, args })).text; });
+});
+
+// ------------------------------------------------------------------ 8. geopolitics
+function loadGeo() {
+  run('p-geo', async () => {
+    const g = await api('/api/geo');
+    const ma = (v, n) => v.map((_, i) => i < n - 1 ? null : v.slice(i - n + 1, i + 1).reduce((a, b) => a + b, 0) / n);
+    const H = 280;
+    if (g.GPR) draw('geo-gpr', () => [[line(g.GPR.d, g.GPR.v, 'Daily', alpha(C.muted, 0.7), { width: 1 }), line(g.GPR.d, g.GPR.ma7, '7-day average', C.s1)], { height: H, yaxis: { hoverformat: '.0f' } }]);
+    else $('#geo-gpr').innerHTML = '<p class="muted">GPR download failed.</p>';
+    const e = g.USEPUINDXD;
+    draw('geo-epu', () => [[line(e.d, e.v, 'Daily', alpha(C.muted, 0.7), { width: 1 }), line(e.d, ma(e.v, 30), '30-day average', C.s1)], { height: H, yaxis: { hoverformat: '.0f' } }]);
+    draw('geo-vol', () => [[line(g.OVXCLS.d, g.OVXCLS.v, 'OVX (oil)', C.s1), line(g.VIXCLS.d, g.VIXCLS.v, 'VIX (S&P 500)', C.s2), line(g.GVZCLS.d, g.GVZCLS.v, 'GVZ (gold)', C.s3)],
+      { height: H, yaxis: { title: 'implied vol', hoverformat: '.1f' } }]);
+  });
+  loadEvents(true);
+}
+function loadEvents(first) {
+  return run('p-events', async () => {
+    const types = $$('#ev-types input:checked').map(i => i.value);
+    const r = await api('/api/events?types=' + encodeURIComponent(types.join(',')));
+    if (first) $('#ev-types').innerHTML = r.types.map(t => `<label><input type="checkbox" value="${esc(t)}"> ${esc(t.replace(/_/g, ' '))}</label>`).join('');
+    const rows = r.rows.filter(x => x.SPX && isNum(x.SPX.d21));
+    const cat = x => `${x.date}  ${x.label.length > 38 ? x.label.slice(0, 37) + '…' : x.label}`;
+    const groups = [['N', 'No regime change', () => C.s1], ['Y', 'Regime changed', () => C.s2], ['?', 'Unclear', () => C.muted]];
+    const f2 = v => isNum(v) ? spct(v, 1) : '–';
+    $('#ev-out').innerHTML = `<div class="plot" id="ev-plot"></div>
+      <h3>Per-event detail (${r.rows.length} events)</h3><div class="tw" style="max-height:420px"><table class="num"><thead><tr><th>Date</th><th style="text-align:left">Event</th><th style="text-align:left">Type</th><th style="text-align:left">Channel</th><th>Regime chg</th>
+      <th>SPX 1d</th><th>SPX 5d</th><th>SPX 21d</th><th>SPX 63d</th><th>SPX max DD</th><th>VIX 5d (pts)</th><th>WTI 21d</th><th>Gold 21d</th><th>UST10 21d (bp)</th></tr></thead><tbody>
+      ${r.rows.map(x => `<tr><td>${esc(x.date)}</td><td style="text-align:left">${esc(x.label)}</td><td style="text-align:left">${esc(x.type)}</td><td style="text-align:left">${esc(x.channel)}</td><td>${esc(x.regime_change)}</td>
+        <td>${f2(x.SPX?.d1)}</td><td>${f2(x.SPX?.d5)}</td><td>${f2(x.SPX?.d21)}</td><td>${f2(x.SPX?.d63)}</td><td>${f2(x.SPX?.max_dd)}</td><td>${isNum(x.VIX?.d5) ? num(x.VIX.d5, 1) : '–'}</td>
+        <td>${f2(x.WTI?.d21)}</td><td>${f2(x.GOLD?.d21)}</td><td>${isNum(x.UST10?.d21) ? num(x.UST10.d21 * 100, 0) : '–'}</td></tr>`).join('')}</tbody></table></div>
+      <details><summary>Full study output (eventkit)</summary><pre>${esc(r.text)}</pre></details>`;
+    const order = rows.map(cat).reverse();
+    draw('ev-plot', () => [groups.map(([k, name, col]) => {
+      const g = rows.filter(x => (x.regime_change || '?') === k || (k === '?' && !['Y', 'N'].includes(x.regime_change)));
+      return { type: 'bar', orientation: 'h', name, y: g.map(cat), x: g.map(x => x.SPX.d21 * 100), marker: { color: col() },
+        text: g.map(x => `${esc(x.label)}<br>${x.date} · ${x.type}<br>SPX 21d ${spct(x.SPX.d21)} · max DD ${spct(x.SPX.max_dd)}`), textposition: 'none', hovertemplate: '%{text}<extra></extra>' };
+    }).filter(t => t.y.length), { height: 90 + rows.length * 17, hovermode: 'closest', bargap: 0.25,
+      xaxis: { title: 'S&P 500 return 21 trading days after the event', ticksuffix: '%', showspikes: false, side: 'top' },
+      yaxis: { categoryorder: 'array', categoryarray: order, tickfont: { size: 10.5, color: C.muted }, showspikes: false }, margin: { l: 8, r: 8, t: 48, b: 8 },
+      legend: { orientation: 'h', x: 0, y: -0.005, yanchor: 'top' } }]);
+  });
+}
+onSubmit('ev-form', () => loadEvents(false));
+
+// scenario tree editor
+let TREE = { cols: ['SPX', 'WTI'], rows: [['Contained', 50, 2, -5], ['Escalation', 35, -6, 15], ['Strait closed', 15, -15, 40]] };
+function renderTree() {
+  $('#tr-table').innerHTML = `<thead><tr><th>Scenario</th><th>Prob %</th>${TREE.cols.map((c, j) => `<th><input type="text" value="${esc(c)}" data-col="${j}" aria-label="Asset name" style="width:6em"> move</th>`).join('')}<th></th></tr></thead>
+    <tbody>${TREE.rows.map((r, i) => `<tr>${r.map((v, j) => `<td class="edit"><input type="${j ? 'number' : 'text'}" step="any" value="${esc(v)}" data-r="${i}" data-c="${j}"></td>`).join('')}<td><button type="button" class="btn ghost sm" data-del="${i}" aria-label="Remove scenario">✕</button></td></tr>`).join('')}</tbody>`;
+}
+$('#tr-table').addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset.col !== undefined) TREE.cols[+t.dataset.col] = t.value.trim();
+  else if (t.dataset.r !== undefined) TREE.rows[+t.dataset.r][+t.dataset.c] = t.value;
+});
+$('#tr-table').addEventListener('click', e => { const b = e.target.closest('[data-del]'); if (b) { TREE.rows.splice(+b.dataset.del, 1); renderTree(); } });
+$('#tr-add').onclick = () => { TREE.rows.push(['', '', ...TREE.cols.map(() => '')]); renderTree(); };
+$('#tr-addcol').onclick = () => { TREE.cols.push('GOLD'); TREE.rows.forEach(r => r.push('')); renderTree(); };
+onSubmit('tr-form', () => run('p-tree', async () => {
+  const cols = TREE.cols.map((c, j) => [c, j]).filter(([c]) => /^[A-Za-z0-9_]+$/.test(c));
+  if (!cols.length) throw new Error('Name at least one asset column (letters, digits, underscore).');
+  const tree = TREE.rows.filter(r => String(r[0]).trim() && r[1] !== '').map(r => Object.fromEntries([['scenario', String(r[0]).trim()], ['prob', Number(r[1]) / 100], ...cols.map(([c, j]) => [c, Number(r[j + 2]) || 0])]));
+  if (!tree.length) throw new Error('Add at least one scenario with a probability.');
+  const args = { pos: $('#tr-pos').value.trim(), 'max-loss': $('#tr-max').value.trim() };
+  $('#tr-out').classList.remove('empty');
+  $('#tr-out').textContent = (await api('/api/run', { kit: 'eventkit.py', cmd: 'scenarios', tree, args })).text;
+}));
+INIT.geo = () => { renderTree(); loadGeo(); };
+
+// ------------------------------------------------------------------ 9. order flow
+function loadFlow() {
+  return run('p-flow', async () => {
+    const q = new URLSearchParams({ symbol: $('#fl-sym').value, exchange: $('#fl-ex').value, minutes: val('fl-min') ?? 10, bar: $('#fl-bar').value });
+    const r = await api('/api/flow?' + q);
+    const t = r.t.map(s => new Date(s * 1000)), P = r.profile, m = r.meta;
+    $('#fl-body').innerHTML = `<p class="note" style="margin-top:0">${esc(m.symbol)} on ${esc(m.exchange)} · ${m.trades.toLocaleString()} trades · ${r.t.length} bars
+      ${m.inferred_side ? ' · <span class="warn" style="display:inline">aggressor side inferred by tick rule (less reliable)</span>' : ' · aggressor side reported by the exchange'}</p>
+      <div class="plot" id="fl-plot"></div><h3>Delta, footprint and events (flowkit)</h3><pre>${esc(r.text)}</pre>`;
+    draw('fl-plot', () => {
+      const inVA = P.price.map(p => p >= P.va_lo && p <= P.va_hi);
+      const lv = (y, name, color, dash) => ({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y', y0: y, y1: y, line: { color, width: 1, dash } });
+      return [[
+        candles(t, r.o, r.h, r.l, r.c, { showlegend: false }),
+        { type: 'bar', orientation: 'h', y: P.price, x: P.vol, name: 'Volume at price', xaxis: 'x2', yaxis: 'y2', showlegend: false,
+          marker: { color: inVA.map(v => v ? alpha(C.s1, 0.65) : alpha(C.muted, 0.45)) }, hovertemplate: '%{y:,.2f}: %{x:,.3f}<extra></extra>' },
+        { type: 'bar', x: t, y: r.delta, name: 'Delta (buy − sell)', xaxis: 'x3', yaxis: 'y3', showlegend: false, marker: { color: r.delta.map(d => d >= 0 ? C.up : C.down) }, hovertemplate: '%{y:+,.3f}' },
+        line(t, r.cvd, 'CVD', C.ink2, { width: 1.5 }, { xaxis: 'x4', yaxis: 'y4', showlegend: false, hovertemplate: '%{y:+,.3f}' }),
+      ], {
+        height: 640, hovermode: 'x unified',
+        xaxis: { domain: [0, 0.77], anchor: 'y', rangeslider: { visible: false }, showticklabels: false },
+        yaxis: { domain: [0.42, 1], title: 'Price', hoverformat: ',.2f' },
+        xaxis2: { domain: [0.80, 1], anchor: 'y2', showspikes: false, title: 'Volume at price' },
+        yaxis2: { domain: [0.42, 1], matches: 'y', anchor: 'x2', showticklabels: false },
+        xaxis3: { domain: [0, 0.77], anchor: 'y3', matches: 'x', showticklabels: false },
+        yaxis3: { domain: [0.22, 0.39], title: 'Delta' },
+        xaxis4: { domain: [0, 0.77], anchor: 'y4', matches: 'x' },
+        yaxis4: { domain: [0, 0.19], title: 'CVD' },
+        shapes: [lv(P.poc, 'POC', C.ink, 'solid'), lv(P.va_hi, 'VAH', C.muted, 'dash'), lv(P.va_lo, 'VAL', C.muted, 'dash'), lv(P.vwap, 'VWAP', C.s2, 'dot')],
+        annotations: [['POC', P.poc], ['VAH', P.va_hi], ['VAL', P.va_lo], ['VWAP', P.vwap]].map(([n, y]) => ({ xref: 'paper', x: 1, xanchor: 'right', yref: 'y', y, yanchor: 'bottom', text: `${n} ${num(y, 2)}`, bgcolor: alpha(C.surface, 0.85), font: { size: 10.5, color: n === 'VWAP' ? C.s2 : C.ink2 } })),
+      }];
+    });
+  });
+}
+onSubmit('fl-form', loadFlow);
+
+// ------------------------------------------------------------------ theme + boot
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  store.set('trader-ui-theme', t);
+  readColors();
+  for (const id of plots.keys()) paint(id);
+  if (STOCK && started.has('stock')) updateImplied();
+}
+$('#theme-btn').onclick = () => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+// Native step/min validation silently blocks submits (e.g. 0.5 with min 0.05 step 0.1); the server validates instead.
+$$('form').forEach(f => { f.noValidate = true; });
+document.documentElement.dataset.theme = store.get('trader-ui-theme') || 'dark';
+readColors();
+if (typeof Plotly === 'undefined') document.querySelector('main').insertAdjacentHTML('afterbegin', '<div class="err">Plotly failed to load from cdn.jsdelivr.net. Charts need an internet connection.</div>');
+showTab(location.hash.slice(1) || 'dashboard');
+</script>
+</body>
+</html>

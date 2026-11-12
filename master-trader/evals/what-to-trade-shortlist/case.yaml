@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: what-to-trade-shortlist
+expected_outcome: |
+  A data-driven answer: a current regime read with numbers (trend, breadth, volatility), a choice of
+  strategy family justified by out-of-sample / walk-forward or evidence-graded reasoning rather than
+  an in-sample backtest, a scan of a relevant universe (US ETFs and mega-cap stocks) producing a
+  ranked shortlist with entry, stop, target and position size for each name consistent with a stated
+  per-idea risk budget, recognition that correlated names are one bet plus a cap on total open risk,
+  and honesty that a screen is a set of trials needing confirmation (catalysts such as earnings,
+  liquidity, costs).

@@ -1,0 +1,14 @@
+schema_version: "1.1"
+name: nvda-deep-dive-projection
+expected_outcome: |
+  A dated, sourced single-stock analysis of NVDA as of mid-November 2026: the latest reported quarter's
+  fundamentals with numbers (revenue, growth, gross margin, cash flow, balance-sheet changes) taken
+  from filings or the company's release; the most material recent news, including the CEO transition
+  announced on 12 Nov 2026 in an 8-K, with a judgment of what is new versus already priced using the
+  price and options reaction; a valuation that states what the current price implies (reverse DCF,
+  implied growth, or multiples against growth); the upcoming earnings event with the implied move
+  compared to NVDA's own history of earnings reactions; a projection expressed as a probability
+  distribution or bands over about three months (not a single price target), built from the
+  market-implied distribution and/or a scenario tree with probabilities and named drivers; and
+  guidance for the user's intended pre-earnings purchase that sizes it within a stated risk budget of
+  the $150k account and addresses earnings gap risk.

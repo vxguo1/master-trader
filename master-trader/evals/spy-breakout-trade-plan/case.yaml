@@ -1,0 +1,11 @@
+schema_version: "1.1"
+name: spy-breakout-trade-plan
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  A concrete trade plan for a SPY breakout swing trade on a $50,000 account, grounded in the
+  attached daily data: the recent high and breakout trigger read from the data, a stop placed at a
+  level that invalidates the idea (with the reason), a share count computed from an explicit risk
+  budget of roughly 0.25-1% of equity, reward:risk, a check of current trend/volatility context,
+  scheduled catalysts and gap risk, an honest assessment of the edge (evidence for breakout trading
+  in a liquid index ETF is modest), and a clear verdict (take / take smaller / wait / pass).

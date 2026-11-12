@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: spy-day-trade-open
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  A day-trading plan for SPY at 10:30 ET on a $30,000 margin account, grounded in the attached 5-minute
+  bars (with pre-market): the prior day's high/low/close, the overnight range, the opening range and
+  session VWAP read from the data; a plain-English bottom line and a next best action for someone in a
+  trade and someone flat; a bracket order (entry, stop at a level that invalidates the setup, take-profit,
+  share count from an explicit risk budget); pushback on the user's 2% risk and 10 trades a day with a
+  daily loss limit; honest evidence (published ORB/VWAP edges are small and mostly vanish after costs;
+  most day traders lose); costs per trade; and paper-trading the setup before real money.

@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: btc-order-flow-read
+context:
+  scaffold_script: place-files.sh
+expected_outcome: |
+  An order-flow read computed from the attached trades rather than guessed: buy vs sell aggressor
+  volume and net delta/CVD over the window, how delta relates to the price change (aligned or
+  divergent), any absorption, divergence or stacked-imbalance events with their prices and times,
+  a volume profile or VWAP reference (POC/value area), and a conditional trade idea or a pass tied to
+  location, with stop logic. It is honest that footprint patterns are largely untested lore, that
+  order-flow predictive horizons are short, that a single exchange's tape is a partial view of
+  fragmented crypto liquidity, and that five minutes is a tiny sample.
