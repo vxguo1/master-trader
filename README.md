@@ -54,11 +54,35 @@ Every script prints its commands with `-h`.
 
 ## Keys and data
 
-- **FRED** (macro) needs a free API key. Set `FRED_API_KEY`, or put a file named `*fred*.txt` in the folder
-  `TRADER_KEYS_DIR` points to. Without it, the macro panels are empty and everything else works.
+- **FRED** (macro) needs your own free API key; none ships with the skill. See
+  [Getting a FRED key](#getting-a-fred-key). Without it, the macro panels are empty and everything else works.
 - **Yahoo Finance, SEC EDGAR, Kraken, Coinbase** and the GPR index need no key. Yahoo is unofficial and can
   change or lag without notice.
 - No paid service is used.
+
+### Getting a FRED key
+
+The key is free and takes about two minutes.
+
+1. Create an account at [fredaccount.stlouisfed.org](https://fredaccount.stlouisfed.org/login/secure/) and
+   sign in.
+2. Open [API Keys](https://fredaccount.stlouisfed.org/apikeys) and choose **Request API Key**.
+3. Describe your use in a sentence (for example "personal market research"), accept the terms and submit.
+   The key is a 32-character string of letters and digits.
+4. Give the key to the toolkit in one of two ways:
+   - Set the environment variable `FRED_API_KEY`. On Windows run `setx FRED_API_KEY your_key_here` and open
+     a new terminal. On macOS or Linux add `export FRED_API_KEY=your_key_here` to your shell profile.
+   - Or save the key as the only line of a text file with `fred` in its name, such as
+     `~/.keys/fred_apikey.txt`. To use a different folder, point `TRADER_KEYS_DIR` at it.
+5. Check that it works:
+
+   ```bash
+   python master-trader/scripts/fetch.py macro
+   ```
+
+   A dated macro dashboard means the key was found. "No FRED key found" means it was not.
+
+Keep the key out of anything you commit or share. Each person who uses the toolkit needs their own.
 
 ## Evals
 
