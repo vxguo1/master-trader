@@ -12,8 +12,8 @@ library only). It covers:
 - backtest validation and trading psychology;
 - day trading, with a paper portfolio.
 
-A local web dashboard built on this toolkit lives in its own repo,
-[vxguo1/trader-ui](https://github.com/vxguo1/trader-ui). The app imports the skill; the skill never
+A local web dashboard built on this toolkit, Mekiki, lives in its own repo,
+[vxguo1/mekiki](https://github.com/vxguo1/mekiki). The app imports the skill; the skill never
 depends on the app.
 
 This is analysis software, not investment advice. Free data sources are unofficial and often delayed, so

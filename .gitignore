@@ -1,4 +1,4 @@
-# This repo holds only the master-trader skill (the trader UI has its own repo, vxguo1/trader-ui).
+# This repo holds only the master-trader skill (the Mekiki dashboard has its own repo, vxguo1/mekiki).
 # Everything else in this folder (other skills, eval workspaces, research notes, project notes,
 # packaged .skill files) is ignored by default, including anything added later.
 /*
