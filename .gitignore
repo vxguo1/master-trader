@@ -1,16 +1,13 @@
-# This repo holds only the master-trader skill and its trader UI. Everything else in this folder
-# (other skills, eval workspaces, research notes, project notes, packaged .skill files) is ignored
-# by default, including anything added later.
+# This repo holds only the master-trader skill (the trader UI has its own repo, vxguo1/trader-ui).
+# Everything else in this folder (other skills, eval workspaces, research notes, project notes,
+# packaged .skill files) is ignored by default, including anything added later.
 /*
 !/.gitignore
 !/.gitattributes
 !/README.md
 !/master-trader/
-!/trader-ui/
 
-# generated or personal
+# generated
 __pycache__/
 *.pyc
 *.tmp
-/trader-ui/cache/
-/trader-ui/data/

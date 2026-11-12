@@ -1,37 +1,23 @@
 # master-trader
 
-A master-level trading skill for Claude, and a local web app built on top of it.
+A master-level trading skill for Claude.
 
-- **`master-trader/`** is the skill: operating principles and 11 workflows in `SKILL.md`, an
-  evidence-graded reference library (`references/`, current to Nov 2026), and deterministic calculators
-  (`scripts/`, Python standard library only). It covers single-stock deep dives, market regimes and macro,
-  opportunity scanning and strategy selection, momentum, technical analysis, price action, order flow,
-  options, geopolitical shocks, risk and sizing, backtest validation, trading psychology, and day trading
-  with a paper portfolio.
-- **`trader-ui/`** is the app: a single-page dashboard served by a small Python server on localhost. It
-  imports the skill's toolkit; the skill never depends on the app.
+`master-trader/` holds operating principles and 11 workflows in `SKILL.md`, an evidence-graded reference
+library (`references/`, current to Nov 2026), and deterministic calculators (`scripts/`, Python standard
+library only). It covers:
+- single-stock deep dives, market regimes and macro;
+- opportunity scanning and strategy selection;
+- momentum, technical analysis, price action and order flow;
+- options, geopolitical shocks, risk and sizing;
+- backtest validation and trading psychology;
+- day trading, with a paper portfolio.
+
+A local web dashboard built on this toolkit lives in its own repo,
+[vxguo1/trader-ui](https://github.com/vxguo1/trader-ui). The app imports the skill; the skill never
+depends on the app.
 
 This is analysis software, not investment advice. Free data sources are unofficial and often delayed, so
-don't route live orders from it.
-
-## Quick start
-
-Requires Python 3.10 or newer. Nothing to install.
-
-```bash
-python trader-ui/server.py
-```
-
-Then open http://127.0.0.1:8765. The server binds to localhost only and caches data in `trader-ui/cache/`.
-
-Tabs:
-- Dashboard: market regime, plain-English macro read, FRED macro tables.
-- Charts: daily or hourly, with a live quote and a rule-based next best action.
-- Day Trading: intraday levels, VWAP, a bracket ticket, stocks in play, and intraday rule backtests.
-- Stock: fundamentals, earnings reactions, reverse DCF and a price projection.
-- Scanner: ranked setups with put positions for bearish ideas, plus the small-cap daily selection.
-- Paper: a paper portfolio with bracket orders, filled from real minute bars.
-- Strategy Lab, Options, Risk, Geopolitics, Order Flow.
+don't route live orders from it. Requires Python 3.10 or newer; nothing to install.
 
 ## Using the skill
 
