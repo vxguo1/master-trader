@@ -329,7 +329,10 @@ def scan(data, a):
             if y["sym"] not in clusters and _corr(x["rets"], y["rets"]) > a.cluster_corr:
                 clusters[y["sym"]] = cid
     shorts = sorted((x for x in best.values() if x["side"] == "short"), key=lambda x: -x["score"])
-    return {"reg": reg, "ranked": ranked, "clusters": clusters, "skipped": skipped, "feats": feats, "shorts": shorts}
+    # cands: every setup hit with its own entry and stop, before the one-row-per-symbol cut (a lower-weight setup
+    # on a symbol that also fires a stronger one is still its own idea, e.g. for tracking each family's record)
+    return {"reg": reg, "ranked": ranked, "clusters": clusters, "skipped": skipped, "feats": feats, "shorts": shorts,
+            "cands": sorted(cands, key=lambda x: -x["score"])}
 
 
 def put_plan(sym, entry, stop, target, risk_budget, dte=35):

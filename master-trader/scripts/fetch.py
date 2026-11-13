@@ -683,6 +683,32 @@ def yahoo_screen(min_change=10.0, price_lo=2.0, price_hi=20.0, min_volume=0, siz
     return rows
 
 
+def yahoo_universe(mcap_lo=50e6, mcap_hi=2e9, price_lo=1.0, min_dollar_volume=250e3, limit=6000):
+    """US-listed stocks in a market-cap band (Yahoo's screener, paged 250 at a time), for building a small- or
+    micro-cap universe. Keeps names whose 3-month average dollar volume clears min_dollar_volume. Returns dicts
+    with symbol, name, exchange, price, mcap, avg_vol_3m and dollar_volume, largest first."""
+    ops = [{"operator": "BTWN", "operands": ["intradaymarketcap", mcap_lo, mcap_hi]},
+           {"operator": "GT", "operands": ["intradayprice", price_lo]},
+           {"operator": "EQ", "operands": ["region", "us"]},
+           {"operator": "OR", "operands": [{"operator": "EQ", "operands": ["exchange", x]} for x in MAJOR_EXCHANGES]}]
+    rows, offset = [], 0
+    while offset < limit:
+        body = {"offset": offset, "size": 250, "sortField": "intradaymarketcap", "sortType": "DESC", "quoteType": "EQUITY",
+                "query": {"operator": "AND", "operands": ops}, "userId": "", "userIdType": "guid"}
+        res = ((_yjson("https://query2.finance.yahoo.com/v1/finance/screener", body).get("finance") or {}).get("result") or [{}])[0]
+        page = res.get("quotes") or []
+        for q in page:
+            px, av = q.get("regularMarketPrice") or 0, q.get("averageDailyVolume3Month") or 0
+            if px * av >= min_dollar_volume:
+                rows.append({"symbol": q["symbol"], "name": q.get("shortName") or q.get("longName") or q["symbol"],
+                             "exchange": q.get("exchange"), "price": px, "mcap": q.get("marketCap"), "avg_vol_3m": av,
+                             "dollar_volume": px * av})
+        offset += len(page)
+        if len(page) < 250 or offset >= (res.get("total") or 0):
+            break
+    return rows
+
+
 def key_stats(symbol):
     """Float, shares outstanding and short interest from Yahoo's key statistics (None where Yahoo has nothing)."""
     js = _yjson(f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(symbol)}"
