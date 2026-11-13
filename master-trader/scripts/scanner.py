@@ -49,7 +49,8 @@ UNIVERSES = {
     "megacap": ("AAPL MSFT NVDA AMZN GOOGL META TSLA AVGO BRK-B JPM LLY V UNH XOM MA COST HD PG JNJ NFLX "
                 "ORCL AMD CRM WMT BAC").split(),
     "futures": "ES=F NQ=F RTY=F CL=F BZ=F NG=F GC=F SI=F HG=F ZN=F ZB=F ZC=F ZS=F ZW=F 6E=F 6J=F 6B=F".split(),
-    "crypto": "BTC-USD ETH-USD SOL-USD BNB-USD XRP-USD ADA-USD DOGE-USD AVAX-USD LINK-USD".split(),
+    "crypto": ("BTC-USD ETH-USD SOL-USD BNB-USD XRP-USD ADA-USD DOGE-USD AVAX-USD LINK-USD "
+               "TRX-USD LTC-USD BCH-USD DOT-USD XLM-USD HBAR-USD").split(),  # >= 10 so the cross-sectional setups can fire
     "fx": "EURUSD=X USDJPY=X GBPUSD=X AUDUSD=X USDCAD=X USDCHF=X NZDUSD=X USDMXN=X".split(),
 }
 
@@ -98,6 +99,7 @@ def load_universe(a):
             import fetch  # noqa: PLC0415
         for s in syms:
             path = os.path.join(a.data_dir, s.replace("^", "").replace("=", "_").replace("/", "_") + ".csv")
+            coins = s.upper().endswith("-USD")  # Yahoo reports crypto volume in USD; store coins, like shares
             if a.fetch:
                 try:
                     rows = fetch.yahoo_history(s, a.years)
@@ -108,7 +110,7 @@ def load_universe(a):
                         w.writerow(["date", "open", "high", "low", "close", "volume"])
                         for r in rows:
                             f = r[6] / r[4] if r[4] else 1.0  # split/dividend-adjust OHLC
-                            w.writerow([r[0], r[1] * f, r[2] * f, r[3] * f, r[6], int(r[5])])
+                            w.writerow([r[0], r[1] * f, r[2] * f, r[3] * f, r[6], r[5] / r[4] if coins and r[4] else int(r[5])])
                 except Exception as e:  # noqa: BLE001
                     print(f"  skip {s}: {e}", file=sys.stderr)
                     continue

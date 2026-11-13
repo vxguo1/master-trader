@@ -354,7 +354,7 @@ Evidence behind the gates:
 - **Microcaps** (below the NYSE 20th percentile) are about 60% of stocks but about 3% of market cap, and they drive many anomaly results. Use NYSE breakpoints and test size groups separately (Fama & French 2008) [Strong | K-PR, SC numbers].
 - **Delisting bias.** Missing delisting returns bias small-stock and loser returns upward, so backtests need delisted names and their delisting returns (Shumway 1997) [Strong | K-PR]. The $5 filter is standard in momentum work (Jegadeesh & Titman 2001 and replications) [K-PR, SC].
 
-**scanner.py's built-in universes** are current lists, not point-in-time: `etf-core` (23 cross-asset ETFs), `sectors` (15 sector/industry ETFs), `megacap` (25 US megacaps), `futures` (17 Yahoo continuous contracts), `crypto` (9 coins), `fx` (8 pairs). `--bench` must name an instrument that was loaded; otherwise the script falls back to the instrument with the highest $ADV. Fetched files are named after the symbol, with `=` and `/` replaced by `_` and `^` removed (ES=F → `ES_F.csv`).
+**scanner.py's built-in universes** are current lists, not point-in-time: `etf-core` (23 cross-asset ETFs), `sectors` (15 sector/industry ETFs), `megacap` (25 US megacaps), `futures` (17 Yahoo continuous contracts), `crypto` (15 coins), `fx` (8 pairs). `--bench` must name an instrument that was loaded; otherwise the script falls back to the instrument with the highest $ADV. Fetched files are named after the symbol, with `=` and `/` replaced by `_` and `^` removed (ES=F → `ES_F.csv`).
 
 ### 6.2 The ten setups in `scanner.py scan`
 
