@@ -171,9 +171,11 @@ def open_risk(book):
 
 def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="market", stop=None, target=None,
                 target_r=None, flatten=None, tif="day", setup="", note="", right=None, strike=None, expiry=None,
-                trigger="underlying", iv=None, now=None, price=None, tzname=None, force=False, quote=None):
+                trigger="underlying", iv=None, now=None, price=None, tzname=None, force=False, quote=None,
+                slippage_bps=None):
     """Validate, size and record a bracket order (filling a market order at once when a price is known).
-    Returns (order, notes). Raises ValueError with a readable reason when the order breaks a rule."""
+    slippage_bps overrides the book's slippage for this order and the position it opens (one book trading both
+    liquid ETFs and thin small caps). Returns (order, notes). Raises ValueError when the order breaks a rule."""
     symbol = symbol.upper()
     notes = []
     st = book["settings"]
@@ -248,13 +250,15 @@ def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="marke
     o = {"id": oid, "symbol": symbol, "kind": kind, "side": side, "qty": qty, "entry": en, "stop": stop,
          "target": target, "flatten": flatten, "tif": tif, "setup": setup, "note": note, "created": t_now,
          "status": "working", "risk_cash": risk_cash, "tz": tzname, "trigger": trigger}
+    if slippage_bps is not None:
+        o["slippage_bps"] = float(slippage_bps)
     if kind == "option":
         o.update(right=right, strike=strike, expiry=expiry, mult=mult, iv=opt_iv, premium=prem)
     book["orders"].append(o)
     _log(book, f"order #{oid}: {side} {qty} {_desc(o)} {en['type']}{' ' + str(en['price']) if en['price'] else ''}"
                f" stop {stop} target {target}", t_now)
     if en["type"] == "market" and market_open:
-        fill = prem if kind == "option" else und * (1 + d * st["slippage_bps"] / 1e4)
+        fill = prem if kind == "option" else und * (1 + d * _slip(book, o))
         _open_position(book, o, fill, t_now, und)
         notes.append(f"filled at {fill:,.4g} ({'ask' if kind == 'option' else 'quote + slippage'})")
     elif en["type"] == "market":
@@ -277,7 +281,7 @@ def _open_position(book, o, fill, ts, und):
         book["cash"] += o["qty"] * fill - fees
     o["status"] = "filled"
     p = {k: o[k] for k in ("id", "symbol", "kind", "side", "qty", "stop", "target", "flatten", "setup", "note", "tz",
-                           "trigger", "risk_cash") if k in o}
+                           "trigger", "risk_cash", "slippage_bps") if k in o}
     p.update(entry_price=fill, entry_ts=ts, fees=fees, mark=fill, mark_ts=ts, und_entry=und, mfe=0.0, mae=0.0, mult=mult)
     if o["kind"] == "option":
         p.update(right=o["right"], strike=o["strike"], expiry=o["expiry"], iv=o["iv"])
@@ -313,6 +317,11 @@ def _close(book, p, price, ts, reason):
     return tr
 
 
+def _slip(book, x):
+    """An order's or position's own slippage (fraction), else the book's."""
+    return x.get("slippage_bps", book["settings"]["slippage_bps"]) / 1e4
+
+
 def cancel_order(book, oid):
     o = next((x for x in book["orders"] if x["id"] == oid and x["status"] == "working"), None)
     if not o:
@@ -337,7 +346,7 @@ def close_position(book, ref, price=None, now=None):
                 px = oq[0] if oq and oq[0] else model_option(p, live_quote(p["symbol"])["price"], t) * 0.98
             else:
                 d = 1 if p["side"] == "long" else -1
-                px = live_quote(p["symbol"])["price"] * (1 - d * book["settings"]["slippage_bps"] / 1e4)
+                px = live_quote(p["symbol"])["price"] * (1 - d * _slip(book, p))
         done.append(_close(book, p, px, t, "manual close"))
     return done
 
@@ -351,7 +360,6 @@ def _hhmm(ts, tzname):
 def _step(book, sym, bar, secs, tzname, events):
     """Process one bar [ts, label, o, h, l, c, v] of the underlying for every order and position on sym."""
     ts, _, o_, h, l, c = bar[:6]
-    slip = book["settings"]["slippage_bps"] / 1e4
     day, hm = _hhmm(ts, tzname)
     # entries
     for o in [x for x in book["orders"] if x["symbol"] == sym and x["status"] == "working"]:
@@ -363,7 +371,7 @@ def _step(book, sym, bar, secs, tzname, events):
             events.append(f"#{o['id']} expired unfilled")
             continue
         d = 1 if o["side"] == "long" else -1
-        e, fill = o["entry"], None
+        e, fill, slip = o["entry"], None, _slip(book, o)
         if e["type"] == "market":
             fill = o_ * (1 + d * slip)
         elif e["type"] == "limit" and ((d > 0 and l <= e["price"]) or (d < 0 and h >= e["price"])):
@@ -423,7 +431,7 @@ def _step(book, sym, bar, secs, tzname, events):
             px = model_option(p, exit_und, ts) * 0.98  # sell near the bid
         else:
             sgn = 1 if p["side"] == "long" else -1
-            px = exit_und * (1 - sgn * slip) if reason != "target" else exit_und  # targets are limit orders
+            px = exit_und * (1 - sgn * _slip(book, p)) if reason != "target" else exit_und  # targets are limit orders
         tr = _close(book, p, px, ts, reason)
         events.append(f"#{p['id']} {reason}: out at {px:,.4g}, {tr['pnl']:+,.2f}" + (f" ({tr['R']:+.2f}R)" if tr["R"] is not None else ""))
 
