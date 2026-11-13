@@ -7,7 +7,7 @@ Commands
   macro                    one-screen macro/regime dashboard from FRED (needs FRED key)
   fred SERIES... [--out]   download FRED series (merged on date) to CSV / print latest
   search "text"            find FRED series IDs
-  gpr [--freq daily]       Caldara-Iacoviello Geopolitical Risk index (needs pandas to parse .xls)
+  gpr [--freq daily]       Caldara-Iacoviello Geopolitical Risk index (needs xlrd to parse .xls)
   fundamentals TICKER      quarterly financials from SEC XBRL: revenue, growth, margins, EPS, FCF, SBC, inventory days
   earnings-dates TICKER    past earnings release dates and AMC/BMO timing from SEC 8-K item 2.02 filings
   prices SYMBOL [--out]    daily OHLCV history (Yahoo chart API; no key); --interval 1h|30m|15m|5m|2m|1m for
@@ -921,26 +921,39 @@ def cmd_gpr(a):
     with urllib.request.urlopen(req, timeout=60) as r, open(raw, "wb") as fh:
         fh.write(r.read())
     try:
-        import pandas as pd  # noqa: PLC0415
-        df = pd.read_excel(raw)  # needs the xlrd package for .xls
+        import xlrd  # noqa: PLC0415 -- pure Python, no other dependencies
     except ImportError as e:
-        sys.exit(f"  saved {raw}, but reading .xls needs pandas + xlrd ({e}). Install with `pip install xlrd`, "
+        sys.exit(f"  saved {raw}, but reading .xls needs xlrd ({e}). Install with `pip install xlrd`, "
                  "or open the file in Excel and save as CSV.")
-    lowmap = {str(c).lower(): c for c in df.columns}
-    dcol = next((lowmap[k] for k in ("date", "month", "day") if k in lowmap), df.columns[0])
-    keep = [c for c in df.columns if str(c).upper().startswith(("GPR", "GPRT", "GPRA")) and "_" not in str(c)][:6]
-    keep = keep or [c for c in df.columns if str(c).upper().startswith("GPR")][:6]
-    df = df[[dcol] + keep].dropna(subset=keep[:1])
-    if pd.api.types.is_numeric_dtype(df[dcol]):  # e.g. DAY = 20260302 (YYYYMMDD integers)
-        df[dcol] = pd.to_datetime(df[dcol].astype("int64").astype(str), format="%Y%m%d")
-    df[dcol] = pd.to_datetime(df[dcol]).dt.strftime("%Y-%m-%d")
+    book = xlrd.open_workbook(raw)
+    sh = book.sheet_by_index(0)
+    head = [str(x).strip() for x in sh.row_values(0)]
+    low = [h.lower() for h in head]
+    di = next((low.index(k) for k in ("day", "month", "date") if k in low), 0)  # DAY (YYYYMMDD) before 'date' serials
+    keep = [i for i, h in enumerate(head) if h.upper().startswith("GPR") and "_" not in h][:6]
+    keep = keep or [i for i, h in enumerate(head) if h.upper().startswith("GPR")][:6]
+
+    def day(c):
+        if c.ctype == xlrd.XL_CELL_DATE:
+            return xlrd.xldate_as_datetime(c.value, book.datemode).strftime("%Y-%m-%d")
+        s = str(int(c.value)) if c.ctype == xlrd.XL_CELL_NUMBER else str(c.value).strip()
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else s[:10]
+    rows = []
+    for r in range(1, sh.nrows):
+        cells = sh.row(r)
+        if cells[keep[0]].ctype != xlrd.XL_CELL_NUMBER:  # months before the index starts are blank
+            continue
+        rows.append([day(cells[di])] + [cells[i].value if cells[i].ctype == xlrd.XL_CELL_NUMBER else "" for i in keep])
+    names = [head[i] for i in keep]
     out_csv = a.out or f"gpr_{a.freq}.csv"
-    df.rename(columns={dcol: "date"}).to_csv(out_csv, index=False)
-    last = df.iloc[-1]
-    hist = df[keep[0]].astype(float)
-    pctile = (hist <= float(last[keep[0]])).mean()
-    print(f"  GPR {a.freq}: {len(df)} rows {df[dcol].iloc[0]} .. {last[dcol]}; columns {keep}")
-    print(f"  latest {keep[0]} = {float(last[keep[0]]):.1f} (percentile {pctile:.0%} of history; 100 = 1985-2019 average)")
+    with open(out_csv, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["date"] + names)
+        w.writerows(rows)
+    hist = [x[1] for x in rows]
+    pctile = sum(1 for x in hist if x <= hist[-1]) / len(hist)
+    print(f"  GPR {a.freq}: {len(rows)} rows {rows[0][0]} .. {rows[-1][0]}; columns {names}")
+    print(f"  latest {names[0]} = {hist[-1]:.1f} (percentile {pctile:.0%} of history; 100 = 1985-2019 average)")
     print(f"  wrote {out_csv}  (source: Caldara & Iacoviello, matteoiacoviello.com/gpr.htm)")
 
 
