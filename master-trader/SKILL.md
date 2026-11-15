@@ -11,7 +11,9 @@ description: >
   options or crypto. Triggers: trade idea, setup, entry/stop, bracket order, position size,
   leverage, backtest, Sharpe, overfitting, trend following, breakout, gappers, RSI, VWAP, order
   book, GEX, 0DTE, earnings, DCF, Fed/CPI, war, tariffs, oil shock, IV, VIX, drawdown, "what should
-  I trade", "should I buy". Not for tax, retirement planning or budgeting.
+  I trade", "should I buy". Also how trading is taxed in the US and what each account type allows
+  (taxable, IRA, Roth, SEP/SIMPLE, 529, custodial, Trump accounts, minimums); not a substitute for a tax
+  professional or a financial planner.
 ---
 
 # Master Trader
@@ -92,7 +94,8 @@ quote is minutes old during the session, say the feed is delayed.
 | Their backtest or strategy judged | B | `quant-research-validation.md` §2-§6, `strategy-playbook.md` (that family) | `perf`, `sharpe`, `ruletest` |
 | "What's the market doing / what regime?" | C | `macro-regimes.md` §2-§3, `market-context-2026.md` §1, §3, §14, `market-forces-flows.md` §6, §8 | `fetch.py macro`, `prices`, `indicators` |
 | Position size, leverage, portfolio, drawdown, stops, costs | D | `risk-sizing-execution.md` §2-§3, §12 (+ §5, §9 as needed) | `size`, `kelly`, `ruin`, `drawdown`, `impact` |
-| Options structure, IV, earnings, VIX, 0DTE | E | `options-volatility.md` §8, pre-trade checklist (+ §4, §10, §12 as needed) | `bs`, `iv`, `move` |
+| Options structure, IV, earnings, VIX, 0DTE | E | `options-volatility.md` §8, pre-trade checklist (+ §4, §10, §12 as needed) | `bs`, `iv`, `move`, `strategy` |
+| A classic structure (long call/put, covered call, cash-secured put, protective put, vertical spread, iron condor, straddle, strangle, calendar): payoff, Greeks, entry/exit rules, evidence, account level | E | `options-strategies.md` §2-§3 and that structure's section (+ §15-§17) | `strategy`, `bs`, `iv` |
 | Momentum, breakouts, RS screens, trend rules | F | `momentum-trading.md` §5-§7 | `indicators`, `rank`, `ruletest` |
 | Indicators, chart patterns, "does TA work" | F | `technical-analysis.md` (evidence section + indicator tables) | `indicators`, `ruletest` |
 | Price action, levels, market structure, Market Profile | F | `price-action.md` (phase guide, key-level playbook, quantify template) | `profile`, `indicators` |
@@ -187,6 +190,8 @@ the expected edge. Apply the "Risk rules a master runs by" (§12), labelled as c
    all three (strategy selection matrix, `options-volatility.md` §8).
 2. Price it: `bs` for Greeks, `iv` from market prices, `move` for implied vs needed move (straddle ≈
    expected absolute move; 1 SD ≈ 1.25 × straddle; breakeven daily move = σ/√252, the "rule of 16").
+   For a multi-leg structure run `strategy NAME` (or `custom --leg ...`): payoff, break-evens, Greeks now / IV+5 /
+   halfway, P(profit) and expected P&L at your realized-vol forecast (`--rv`), Schwab level, margin, scenario grid.
 3. Compare implied to realized/forecast vol (`tradekit.py vol FILE`), check skew and term structure,
    and event pricing.
 4. Run the **Pre-trade options checklist**: max loss, margin, assignment/pin risk, liquidity
@@ -345,7 +350,7 @@ commands as `python scripts/<kit>.py ...` — that path is relative to this skil
 
 | Kit | Commands | Use for |
 |---|---|---|
-| `tradekit.py` | `size` `kelly` `expectancy` `ruin` `drawdown` `sharpe` `perf` `vol` `meanrev` `bs` `iv` `move` `impact` | sizing, Kelly, expectancy & sample size, ruin/drawdown Monte Carlo, Sharpe significance (PSR/DSR/MinTRL), performance reports, vol estimators (Yang-Zhang etc.), OU half-life/Hurst, Black-Scholes Greeks/IV, expected and event moves, √-impact cost |
+| `tradekit.py` | `size` `kelly` `expectancy` `ruin` `drawdown` `sharpe` `perf` `vol` `meanrev` `bs` `iv` `move` `strategy` `impact` | sizing, Kelly, expectancy & sample size, ruin/drawdown Monte Carlo, Sharpe significance (PSR/DSR/MinTRL), performance reports, vol estimators (Yang-Zhang etc.), OU half-life/Hurst, Black-Scholes Greeks/IV, expected and event moves, multi-leg option strategies (11 presets or custom legs: payoff, break-evens, Greeks, odds and expected P&L at a realized-vol forecast, Schwab level, margin, scenario grid), √-impact cost |
 | `techkit.py` | `indicators` `rank` `ruletest` `summary` | plain-English bottom line + rule-based next best action from daily bars (`summary --symbol S --live`); indicator snapshot + Minervini-style trend template + Weinstein stage; momentum ranking; single-asset rule backtests that fill at the next bar's close (`--delay 1`; `--delay 0` = signal close, optimistic), with costs, parameter grid, DSR and OOS split; `--ppy` for non-daily bars |
 | `flowkit.py` | `profile` `delta` `ofi` `book` | volume profile (POC, 70% value area, HVN/LVN) + VWAP bands; footprint/delta/CVD with stacked imbalances, absorption, divergences; Cont-style OFI with contemporaneous vs predictive R²; L2 book imbalance/microprice |
 | `equitykit.py` | `earnings` `dcf` `projection` | single stocks: earnings-day reaction history vs today's implied move; reverse DCF (growth the price implies) and forward DCF grid; market-implied vs scenario price distribution with P(levels) |
@@ -387,9 +392,13 @@ Data notes:
 | `quant-research-validation.md` | backtest review checklist, trial counting, PSR/DSR/MinTRL/PBO, bias audit, walk-forward, ML pitfalls, vol & stationarity tools, tooling/data |
 | `strategy-playbook.md` | 13 systematic families: rationale, construction defaults, performance, crash regimes, decay, comparison table, diversification |
 | `risk-sizing-execution.md` | fixed-fractional/ATR/Kelly/vol-target sizing, portfolio construction, drawdown math, stops, tail hedges, TCA & impact, leverage, blowup lessons, master risk rules |
+| `accounts-and-taxes.md` | US account types (cash, margin, traditional/Roth/rollover/SEP/SIMPLE IRAs, 529, Coverdell, UTMA/UGMA, custodial Roth, Trump accounts) and what may be traded in each; 2026 brackets, long-term rates, NIIT, IRA limits and phase-outs; how stocks, options, futures (1256), FX (988) and crypto are taxed; wash sales across accounts; state rates; account minimums by trade type; projection math for goals |
+| `social-attention.md` | how social-media attention and sentiment (X, Reddit, StockTwits, Telegram, TikTok/YouTube finfluencers, search, Wikipedia) relate to returns, volume and volatility; lead/lag, reversal, meme stocks, crypto pumps, signal construction and pitfalls; guidance for a learned attention filter |
+| `vendors.md` | US retail account rules and costs at Schwab (margin, cash, IRA), Interactive Brokers, Coinbase (spot, perps) and OANDA: margin and intraday margin, margin calls, commissions, transaction taxes, interest, settlement; what paperkit's `VENDORS` models |
 | `market-forces-flows.md` | microstructure, dealer gamma/0DTE, CTA/vol-control/LETF/pension/buyback flows, flow calendar, positioning gauges, liquidity spirals, squeezes |
 | `macro-regimes.md` | growth/inflation quadrants with returns, regime diagnosis procedure, policy/liquidity/curve/dollar/credit/commodities, event trading, valuation timing, FRED checklist |
 | `options-volatility.md` | Greeks, gamma-theta, surface, VRP, VIX/variance, strategy matrix, event vol, dispersion, book risk, 0DTE, checklist, worked examples |
+| `options-strategies.md` | the 11 classic structures (long call/put, covered call, cash-secured put, protective put/collar, bull call and bear put spreads, iron condor, straddle, strangle, calendar): legs, payoff, Greeks over time and IV, regime fit, entry/exit/rolling rules, assignment and dividends, return evidence (Cboe BXM/PUT/PPUT/CLL/CNDR, option-return studies), Schwab levels, IRA, margin and fees |
 | `momentum-trading.md` | signal refinements, dual momentum, intraday momentum, CAN SLIM/Minervini/Darvas/Qullamaggie/Weinstein/Turtle rule cards, trade lifecycle, crash risk, 2023-26 performance |
 | `technical-analysis.md` | where TA has an edge, indicator reference with evidence ratings, patterns/candles, Fib/Elliott/SMC status, professional usage, making TA testable |
 | `price-action.md` | evidenced mechanisms (levels, round-number clustering, intraday regularities), market-phase guide, Brooks toolkit, key-level playbook, Market Profile, Wyckoff/ICT translation, setup quantification |
@@ -429,6 +438,10 @@ flag, confounders) for `eventkit.py study --events-file`.
 - **Macro:** CAPE explains ~40% of 10-year returns but ~nothing at 1 year. The 2022-24 curve inversion
   was a false recession signal (through Oct 2026). Stock-bond correlation turns positive when
   inflation is the dominant shock (2022-).
+- **Option structures:** at fair prices every structure expects minus its costs; the edge is IV against your
+  realized-vol forecast (`strategy --rv`). BXM 8.6% vs S&P TR 11.2%/yr at two-thirds the vol (1986-Oct 2026); PUT
+  7.1% vs 11.0% since 2007; rolling 5% OTM puts (PPUT) cost ≈3.3 points a year; Cboe's iron condor index earned
+  1.1%/yr live (2015-26) vs 2.2% T-bills. 5-6% OTM SPX puts lost ≈54-60% a month on average (1987-2007).
 - **Day trading:** of Indian traders active every year FY22-26, 0.5% were profitable in all five years
   and 65.6% lost every year (SEBI, Aug 2026). Independent replications put the published 5-minute ORB
   edge at +0.13R gross but ≈0 net on NQ and negative on other indices. The US PDT rule was replaced by

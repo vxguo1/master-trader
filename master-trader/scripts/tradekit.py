@@ -22,6 +22,8 @@ Commands
   bs          Black-Scholes-Merton price and Greeks
   iv          implied volatility from an option price
   move        expected move / breakeven daily move from IV or straddle
+  strategy    multi-leg option strategy (11 presets or custom legs): payoff, break-evens,
+              Greeks now / IV+5 / halfway, P(profit), Schwab level, margin, scenario grid
   impact      square-root market impact + spread cost estimate
 """
 from __future__ import annotations
@@ -625,6 +627,259 @@ def cmd_move(a):
     out(rows, f"Expected move ({a.days}d)")
 
 
+# --------------------------------------------------------------------------- multi-leg strategies
+# name: (legs as (quantity, kind, strike slot[, "far"]), default strikes as multiples of --otm from spot)
+# Options count in contracts, stock in shares (100 a contract). The iron condor is the short (credit) one.
+PRESETS = {
+    "long-call": ([(1, "call", 0)], [0]),
+    "long-put": ([(1, "put", 0)], [0]),
+    "covered-call": ([(100, "stock", None), (-1, "call", 0)], [1]),
+    "cash-secured-put": ([(-1, "put", 0)], [-1]),
+    "protective-put": ([(100, "stock", None), (1, "put", 0)], [-1]),
+    "bull-call-spread": ([(1, "call", 0), (-1, "call", 1)], [0, 1]),
+    "bear-put-spread": ([(-1, "put", 0), (1, "put", 1)], [-1, 0]),
+    "iron-condor": ([(1, "put", 0), (-1, "put", 1), (-1, "call", 2), (1, "call", 3)], [-2, -1, 1, 2]),
+    "straddle": ([(1, "call", 0), (1, "put", 0)], [0]),
+    "strangle": ([(1, "put", 0), (1, "call", 1)], [-1, 1]),
+    "calendar": ([(-1, "call", 0), (1, "call", 0, "far")], [0]),
+}
+
+
+def _strike(x, S):
+    inc = 0.5 if S < 25 else 1.0 if S < 250 else 5.0
+    return round(x / inc) * inc
+
+
+def _parse_leg(text, a):
+    """'+1 call 100', '-2 put 95 days=60 iv=0.25 px=1.20', '+100 stock px=98'."""
+    t = text.split()
+    if len(t) < 2 or t[1] not in ("call", "put", "stock") or (t[1] != "stock" and len(t) < 3):
+        sys.exit(f"bad --leg {text!r}: use '+1 call 100 [days=60 iv=0.25 px=1.20]' or '+100 stock [px=98]'")
+    leg = {"qty": float(t[0]), "kind": t[1], "K": None if t[1] == "stock" else float(t[2]), "days": a.days}
+    for kv in t[2 if t[1] == "stock" else 3:]:
+        k, _, v = kv.partition("=")
+        if k not in ("days", "iv", "px"):
+            sys.exit(f"bad --leg {text!r}: options are days=, iv= and px=")
+        leg[k] = float(v)
+    return leg
+
+
+def strategy_legs(a):
+    legs = []
+    if a.name != "custom":
+        spec, slots = PRESETS[a.name]
+        ks = [float(x) for x in a.strikes.split(",")] if a.strikes else [_strike(a.S * (1 + m * a.otm), a.S) for m in slots]
+        if len(ks) != len(slots):
+            sys.exit(f"{a.name} takes {len(slots)} strike(s), lowest first")
+        for qty, kind, slot, *far in spec:
+            kind = a.kind if a.name == "calendar" else kind
+            legs.append({"qty": qty, "kind": kind, "K": None if slot is None else ks[slot],
+                         "days": (a.far_days or 2 * a.days) if far else a.days})
+        opts = [x for x in legs if x["kind"] != "stock"]
+        for attr, key in ((a.px, "px"), (a.ivs, "iv")):
+            if attr:
+                vals = [float(v) for v in attr.split(",")]
+                if len(vals) != len(opts):
+                    sys.exit(f"--{key if key == 'px' else 'ivs'} needs {len(opts)} values, one per option leg in order")
+                for x, v in zip(opts, vals):
+                    x[key] = v
+        if a.short:
+            for x in legs:
+                x["qty"] = -x["qty"]
+    legs += [_parse_leg(t, a) for t in a.leg or []]
+    if not any(x["kind"] != "stock" for x in legs):
+        sys.exit("give a strategy name or at least one option --leg")
+    for x in legs:
+        x["qty"] *= a.qty
+        x["mult"] = 1 if x["kind"] == "stock" else 100
+        if x["kind"] == "stock":
+            x["px"] = x.get("px", a.S)
+            continue
+        if "px" in x and "iv" not in x:  # a market price sets the leg's IV, so its Greeks match the quote
+            x["iv"] = implied_vol(x["px"], a.S, x["K"], x["days"] / 365, a.r, a.q, x["kind"])
+            if math.isnan(x["iv"]):
+                sys.exit(f"price {x['px']} for the {x['K']:g} {x['kind']} is outside no-arbitrage bounds")
+        x["iv"] = x.get("iv", a.vol)
+        x["px"] = x.get("px", bs(a.S, x["K"], x["days"] / 365, a.r, a.q, x["iv"], x["kind"])["price"])
+    return legs
+
+
+def _leg_value(x, s, t, dv, a):
+    if x["kind"] == "stock":
+        return s
+    v = bs(s, x["K"], max(0.0, x["days"] - t) / 365, a.r, a.q, max(1e-4, x["iv"] + dv), x["kind"])["price"]
+    return max(v, s - x["K"] if x["kind"] == "call" else x["K"] - s)  # US equity options are American: never below intrinsic
+
+
+def _greeks(legs, s, t, dv, a):
+    g = {"delta": 0.0, "gamma": 0.0, "theta_day": 0.0, "vega_1pt": 0.0}
+    for x in legs:
+        if x["kind"] == "stock":
+            g["delta"] += x["qty"]
+            continue
+        T = max(0.0, x["days"] - t) / 365
+        if T <= 0:
+            continue
+        b = bs(s, x["K"], T, a.r, a.q, max(1e-4, x["iv"] + dv), x["kind"])
+        for k in g:
+            g[k] += x["qty"] * x["mult"] * b[k]
+    return g
+
+
+def _coverage(legs):
+    """Pair short options with longs of the same kind expiring at or after them (a spread), short calls with long stock;
+    the rest are uncovered (each leg's x["naked"]). Returns (uncovered calls, uncovered puts, any covered by an
+    option, any covered by stock)."""
+    longs = {k: sorted([x["days"], x["qty"]] for x in legs if x["kind"] == k and x["qty"] > 0) for k in ("call", "put")}
+    stock = sum(x["qty"] for x in legs if x["kind"] == "stock")
+    naked, by_opt, by_stock = {"call": 0.0, "put": 0.0}, False, False
+    for x in sorted((x for x in legs if x["kind"] != "stock" and x["qty"] < 0), key=lambda x: -x["days"]):
+        n = -x["qty"]
+        for lg in longs[x["kind"]]:
+            if lg[0] >= x["days"] and lg[1] > 0 and n > 0:
+                use = min(n, lg[1])
+                lg[1] -= use
+                n -= use
+                by_opt = True
+        if x["kind"] == "call" and n > 0 and stock >= 100:
+            use = min(n, stock / 100)
+            stock -= use * 100
+            n -= use
+            by_stock = True
+        x["naked"] = n
+        naked[x["kind"]] += n
+    return naked["call"], naked["put"], by_opt, by_stock
+
+
+def _naked_req(legs, a):
+    """FINRA 4210(f)(2)(E) estimate for uncovered short equity options, with Schwab's $100-a-contract floor: premium +
+    max(20% of the underlying less the out-of-the-money amount, 10% of the underlying (calls) or strike (puts)); a
+    straddle or strangle pays the greater side plus the other side's premium. Covered parts of a leg (spreads, stock)
+    are left out: run _coverage first."""
+    req, prem = {"call": 0.0, "put": 0.0}, {"call": 0.0, "put": 0.0}
+    for x in legs:
+        if not x.get("naked"):
+            continue
+        otm = max(0.0, x["K"] - a.S) if x["kind"] == "call" else max(0.0, a.S - x["K"])
+        floor = 0.10 * (a.S if x["kind"] == "call" else x["K"])
+        n = x["naked"] * x["mult"]
+        req[x["kind"]] += n * max(x["px"] + max(0.20 * a.S - otm, floor), 1.0)
+        prem[x["kind"]] += n * x["px"]
+    return max(req["call"] + prem["put"], req["put"] + prem["call"])
+
+
+def cmd_strategy(a):
+    legs = strategy_legs(a)
+    opts = [x for x in legs if x["kind"] != "stock"]
+    contracts = sum(abs(x["qty"]) for x in opts)
+    fees = contracts * a.fee
+    cost = sum(x["qty"] * x["mult"] * x["px"] for x in legs) + fees  # > 0 a debit, < 0 a credit
+    t_exp = min(x["days"] for x in opts)
+    if t_exp <= 0:
+        sys.exit("every option leg needs days > 0 (at expiry the payoff is just intrinsic value)")
+    T = t_exp / 365
+    sd = a.S * a.vol * math.sqrt(T)
+
+    def pnl(s, t=t_exp, dv=0.0):
+        return sum(x["qty"] * x["mult"] * _leg_value(x, s, t, dv, a) for x in legs) - cost
+
+    strikes = sorted({x["K"] for x in opts})
+    lo = min(a.S * math.exp(-6 * a.vol * math.sqrt(T)), 0.5 * strikes[0])
+    hi = max(a.S * math.exp(6 * a.vol * math.sqrt(T)), 1.5 * strikes[-1])
+    n = 3000
+    xs = sorted({lo * (hi / lo) ** (i / n) for i in range(n + 1)} | set(strikes))
+    ys = [pnl(s) for s in xs]
+    floor_v = pnl(1e-6)
+    slope = (pnl(4 * hi) - pnl(2 * hi)) / (2 * hi)
+    top, bottom = max(ys + [floor_v]), min(ys + [floor_v])
+    unl_gain, unl_loss = slope > 0.01, slope < -0.01
+    bes = []
+    for (x0, y0), (x1, y1) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
+        if (y0 < 0) != (y1 < 0):
+            for _ in range(60):
+                m = (x0 + x1) / 2
+                if (pnl(m) < 0) == (y0 < 0):
+                    x0 = m
+                else:
+                    x1 = m
+            bes.append((x0 + x1) / 2)
+
+    # odds and expected P&L: lognormal at the realized-vol forecast (--rv, default --vol) with risk-neutral drift.
+    # At rv = IV a fairly priced structure expects about minus its costs; the edge is IV vs realized (and skew).
+    rv = a.rv or a.vol
+    mu, sig = math.log(a.S) + (a.r - a.q - 0.5 * rv ** 2) * T, rv * math.sqrt(T)
+    cdf = lambda s: N.cdf((math.log(s) - mu) / sig)
+    edges = [0.0] + xs + [math.inf]
+    p_win = p_max = ev = 0.0
+    tol = 0.005 * abs(bottom) + 0.01
+    for e0, e1 in zip(edges, edges[1:]):
+        mid = e1 / 2 if e0 == 0 else 2 * e0 if e1 == math.inf else math.sqrt(e0 * e1)
+        p = (cdf(e1) if e1 < math.inf else 1.0) - (cdf(e0) if e0 > 0 else 0.0)
+        v = pnl(mid)
+        p_win += p if v > 0 else 0.0
+        p_max += p if v <= bottom + tol else 0.0
+        ev += p * v
+    ev -= cost * (math.exp(a.r * T) - 1)  # over cash: the debit could have earned the rate (a credit earns it)
+
+    # account: Schwab option level, cash or margin needed
+    nc, np_, by_opt, by_stock = _coverage(legs)
+    only_short_puts = all(x["kind"] == "put" and x["qty"] < 0 for x in legs)
+    if not any(x["qty"] < 0 for x in opts):
+        level = "0 (stock + protective put)" if any(x["kind"] == "stock" for x in legs) and all(
+            x["kind"] == "put" for x in opts) else "1 (long options)"
+    elif nc > 0 or (np_ > 0 and not only_short_puts):
+        level = "3 (uncovered): margin account with $5,000+ equity; not in an IRA"
+    elif np_ > 0:
+        level = "0 if cash-secured (strike x 100 in cash, premium counts); 3 if uncovered on margin"
+    else:
+        level = "2 (spreads): margin, or IRA limited margin" if by_opt else "0 (covered by stock: covered call, collar)"
+    max_loss = None if unl_loss else -bottom
+    naked = nc > 0 or (np_ > 0 and not only_short_puts)
+    need = _naked_req(legs, a) if naked else max(cost, max_loss or 0.0)
+
+    rows = []
+    for x in legs:
+        if x["kind"] == "stock":
+            rows.append((f"{x['qty']:+g} shares", f"at {x['px']:.2f}"))
+        else:
+            rows.append((f"{x['qty']:+g} {x['kind']} {x['K']:g} {x['days']:g}d",
+                         f"{x['px']:.2f}  IV {pct(x['iv'], 1)}"))
+    out(rows, f"Strategy: {a.name}{' (sold)' if a.short else ''}  S={a.S} r={pct(a.r)} q={pct(a.q)}")
+
+    gn, gv, gh = _greeks(legs, a.S, 0, 0, a), _greeks(legs, a.S, 0, 0.05, a), _greeks(legs, a.S, t_exp / 2, 0, a)
+    out([(k, f"{gn[key]:>10.2f}  {gv[key]:>10.2f}  {gh[key]:>10.2f}") for k, key in (
+        ("Delta (shares)", "delta"), ("Gamma (shares per $1)", "gamma"), ("Theta ($/calendar day)", "theta_day"),
+        ("Vega ($ per vol pt)", "vega_1pt"))], "Greeks, whole position:        now    IV +5 pts   halfway")
+
+    fmt = lambda v: f"{v:+,.2f}"
+    ratio = (top / max_loss) if max_loss and not unl_gain else None
+    out([
+        ("Net premium", f"{'debit' if cost > 0 else 'credit'} {abs(cost):,.2f} incl. {fees:,.2f} commission "
+                        f"({contracts:g} contract{'s' if contracts != 1 else ''} at {a.fee:g})"),
+        ("Max gain", "unlimited" if unl_gain else fmt(top)),
+        ("Max loss", "unlimited" if unl_loss else fmt(bottom)),
+        ("Reward / risk", f"{ratio:.2f}" if ratio else "n/a"),
+        ("Break-even(s)", ", ".join(f"{b:,.2f} ({pct(b / a.S - 1, 1)})" for b in bes) or "none"),
+        ("P(profit)", f"{pct(p_win, 1)}  (lognormal at {'RV forecast' if a.rv else 'IV'} {pct(rv, 1)}, no drift "
+                      "beyond the rate; skew and fat tails not modelled)"),
+        ("P(max loss)", "n/a (unlimited)" if unl_loss else pct(p_max, 1)),
+        ("Expected P&L over cash", f"{ev:+,.2f}  (if realized vol is {pct(rv, 1)}; about minus costs when it matches "
+                                   f"each leg's IV{'' if a.rv else ': pass --rv for your forecast'})"),
+        ("Schwab level", level),
+        ("Cash or margin needed", f"{need:,.0f}  ({'FINRA uncovered estimate; Schwab may ask more' if naked else 'max loss, or the debit if larger'})"),
+    ], f"At the {t_exp:g}-day expiry" + (" (later legs at Black-Scholes, never below intrinsic)" if len({x['days'] for x in opts}) > 1 else ""))
+
+    pts = sorted({round(v, 6) for v in strikes + bes + [a.S, a.S - sd, a.S + sd, a.S - 2 * sd, a.S + 2 * sd] if v > 0})
+    out([(f"{s:,.2f} ({pct(s / a.S - 1, 1):>7})", fmt(pnl(s))) for s in pts], "P&L at expiry by price")
+
+    cols = [("IV-5", 0, -0.05), ("now", 0, 0.0), ("IV+5", 0, 0.05), ("halfway", t_exp / 2, 0.0), ("expiry", t_exp, 0.0)]
+    grid = [("spot \\ when", "".join(f"{c[0]:>11}" for c in cols))]
+    for k in (-2, -1, 0, 1, 2):
+        s = max(0.01, a.S + k * sd)
+        grid.append((f"{k:+d} SD {s:,.2f}", "".join(f"{pnl(s, t, dv):>11,.0f}" for _, t, dv in cols)))
+    out(grid, f"Scenario P&L ($): 1 SD = {sd:,.2f} over {t_exp:g} days; IV shifts apply to every leg")
+
+
 def cmd_impact(a):
     part = a.qty / a.adv
     impact = a.y * a.daily_vol * math.sqrt(part)
@@ -759,6 +1014,26 @@ def build():
     x.add_argument("--event-vol", type=float, help="IV of expiry containing the event")
     x.add_argument("--base-vol", type=float, help="ex-event IV (e.g. from a neighbouring expiry)")
     x.set_defaults(fn=cmd_move)
+
+    x = s.add_parser("strategy", help="multi-leg option strategy: payoff, break-evens, Greeks, odds, scenarios")
+    x.add_argument("name", choices=list(PRESETS) + ["custom"], help="a preset, or custom with --leg")
+    x.add_argument("--S", type=float, required=True)
+    x.add_argument("--days", type=float, required=True, help="calendar days to the (near) expiry")
+    x.add_argument("--vol", type=float, required=True, help="IV for legs without --ivs/--px (and the odds without --rv)")
+    x.add_argument("--rv", type=float, help="your realized-vol forecast to expiry: sets P(profit) and expected P&L")
+    x.add_argument("--r", type=float, default=0.04)
+    x.add_argument("--q", type=float, default=0.0)
+    x.add_argument("--strikes", help="comma list, lowest first (default: spot and spot x (1 +/- k*otm))")
+    x.add_argument("--otm", type=float, default=0.05, help="default strike spacing, 0.05 = 5%% of spot")
+    x.add_argument("--far-days", type=float, help="calendar: the long leg's days (default 2x --days)")
+    x.add_argument("--kind", choices=["call", "put"], default="call", help="calendar: calls or puts")
+    x.add_argument("--px", help="market prices per option leg, in leg order (sets each leg's IV)")
+    x.add_argument("--ivs", help="IV per option leg, in leg order (skew)")
+    x.add_argument("--short", action="store_true", help="sell the structure (short straddle, long iron condor...)")
+    x.add_argument("--qty", type=float, default=1, help="number of structures")
+    x.add_argument("--leg", action="append", help="extra leg: '+1 call 100 [days=60 iv=0.25 px=1.20]', '+100 stock'")
+    x.add_argument("--fee", type=float, default=0.65, help="commission per contract to open (Schwab $0.65)")
+    x.set_defaults(fn=cmd_strategy)
 
     x = s.add_parser("impact", help="market impact + spread")
     x.add_argument("--qty", type=float, required=True, help="shares/contracts to trade")

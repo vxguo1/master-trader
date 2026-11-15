@@ -44,12 +44,18 @@ YEAR = 365.25 * 86400
 
 # --------------------------------------------------------------------------- book file
 def new_book(equity, commission_share=0.0, commission_contract=0.65, slippage_bps=2.0, bp=4.0, max_risk_pct=1.0,
-             max_heat_pct=6.0, currency="USD"):
+             max_heat_pct=6.0, currency="USD", vendor="generic", account="margin"):
+    """A fresh paper account at `vendor`'s `account` type (VENDORS). The generic account keeps the commissions given
+    here; a vendor's account charges its own."""
+    if account not in VENDORS.get(vendor, {}).get("accounts", {}):
+        raise ValueError(f"no {vendor} {account} account: choose from " + ", ".join(
+            f"{v} {a}" for v, d in VENDORS.items() for a in d["accounts"]))
     t = dt.datetime.now(dt.timezone.utc).timestamp()
     return {"version": 1, "created": t, "currency": currency, "start_equity": equity, "cash": equity,
             "settings": {"commission_share": commission_share, "commission_contract": commission_contract,
-                         "slippage_bps": slippage_bps, "bp": bp, "max_risk_pct": max_risk_pct, "max_heat_pct": max_heat_pct},
-            "next_id": 1, "orders": [], "positions": [], "trades": [], "equity": [[t, equity]], "cursor": {}, "log": []}
+                         "slippage_bps": slippage_bps, "bp": bp, "max_risk_pct": max_risk_pct, "max_heat_pct": max_heat_pct,
+                         "vendor": vendor, "account": account},
+            "accrued_to": t, "interest": 0.0, "unsettled": [], "next_id": 1, "orders": [], "positions": [], "trades": [], "equity": [[t, equity]], "cursor": {}, "log": []}
 
 
 def load_book(path=DEFAULT_BOOK):
@@ -140,17 +146,48 @@ def parse_entry(s):
     return {"type": kind, "price": float(px)}
 
 
-def _fees(book, kind, qty, price, selling, mult=1):
-    st = book["settings"]
-    f = qty * (st["commission_contract"] if kind == "option" else st["commission_share"])
-    if selling:
-        f += SEC_FEE * qty * price * mult
+def _fees(book, x, qty, price, selling, ts=None):
+    """What a fill of x (an order or position) costs: the account's commission (VENDORS fees, or the generic book's
+    own), transaction taxes on shares (TAXES by listing), and on US sales the SEC Section 31 fee and FINRA's TAF."""
+    st, rules, mult = book["settings"], rules_of(book), x.get("mult", 1)
+    mkt, value = market_of(x["symbol"]), qty * price * mult
+    if x["kind"] == "option":
+        f = qty * (rules.get("option_fee", st["commission_contract"]) + ORF)
+    else:
+        fees = rules.get("fees", {})
+        per, bps, lo, hi = fees.get(x["symbol"].upper()) or fees.get(mkt) or (st["commission_share"], 0.0, 0.0, 0.0)
+        f = qty * per + value * bps / 1e4
+        f = min(max(f, lo), value * hi / 100) if hi else max(f, lo)
+        if "." in x["symbol"]:
+            buy, sell = TAXES.get(x["symbol"].rsplit(".", 1)[1].upper(), (0, 0))
+            f += value * (sell if selling else buy) / 1e4
+    if selling and (x["kind"] == "option" or mkt == "us"):
+        f += SEC_FEE * value
+        day = dt.datetime.fromtimestamp(ts or 0, dt.timezone.utc).date().isoformat()
+        if not TAF_FREE[0] <= day < TAF_FREE[1]:
+            f += qty * TAF_CONTRACT if x["kind"] == "option" else min(TAF_SHARE * qty, TAF_CAP)
     return f
 
 
 def _value(p, mark):
     m = p.get("mult", 1)
     return p["qty"] * mark * m * (-1 if p["side"] == "short" else 1)
+
+
+def deposit(book, amount, ts=None, note=""):
+    """Add money to the account (a monthly deposit, a contribution): cash, not profit. Returns the new cash."""
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("a deposit must be positive")
+    t = ts or dt.datetime.now(dt.timezone.utc).timestamp()
+    book["cash"] += amount
+    book.setdefault("deposits", []).append([t, amount, note])
+    _log(book, f"deposit {amount:,.2f}" + (f" ({note})" if note else ""), t)
+    return book["cash"]
+
+
+def deposits_of(book):
+    return sum(d[1] for d in book.get("deposits", []))
 
 
 def equity_of(book):
@@ -169,13 +206,284 @@ def open_risk(book):
     return r + sum(o.get("risk_cash", 0.0) for o in book["orders"] if o["status"] == "working")
 
 
+# --------------------------------------------------------------------------- vendors and accounts
+# A book is one account at one vendor: VENDORS[vendor]["accounts"][kind] is that account's rule set (numbers and their
+# sources: references/vendors.md). Markets (market_of): us, london, europe, tokyo, hongkong (shares, in dollars here),
+# crypto, fx_major, fx. A rule set:
+#   markets     {market: {side: (initial, maintenance)}}: what the account trades and its margin, as fractions of a
+#               position's value (initial to open, maintenance to keep; below it a margin call closes positions).
+#               (1.0, 1.0) is paid in full. A missing side can't be traded ("short" missing: no short sales).
+#   only        {market: set of symbols}: the market is limited to these (e.g. the coins with US-regulated perps)
+#   symbol      {symbol: (initial, maintenance)}: a per-symbol rate, both sides
+#   options     bought listed options (paid in full, 100%)
+#   whole       whole shares or units only (the Schwab Trader API fills no fractions); else `lot` {market: size}
+#               and `lot_symbol` {symbol: size} (a contract's size, e.g. Coinbase's nano BTC perp: 0.01 BTC)
+#   pdt_min     the old pattern-day-trader rule where the broker still keeps it (IBKR: until 20 Oct 2027 at the
+#               latest): under this equity, no 4th day trade within five business days
+#   min_equity  FINRA 4210(b): under it there is no margin: purchases paid in full, no short sales
+#   intraday    requirement on longs opened and closed the same day (FINRA 4210(d)(2) intraday margin)
+#   low_price   longs under this price have no loan value
+#   settle      cash account: sale proceeds settle after this many business days, and buys need settled cash
+#   limited_min IRA limited margin (unsettled proceeds may be spent) needs this much equity; under it, settle T+1
+#   fees        {market or symbol: (per unit, bps of value, minimum, maximum % of value)}; option_fee per contract
+#               (plus ORF). FX fees are half the vendor's typical spread, paid on each fill
+#   debit       ((debit balance below, annual %), ...): margin interest, 360-day year: the whole debit at its tier's
+#               rate, or with `blended` each slice of the debit at its own tier's rate
+#   credit      annual % paid on a credit balance above credit_min (365-day year), scaled by NAV / credit_nav below it
+#   carry       {market: {side: annual % of position value}} while held: FX financing, perp funding (negative: earned)
+#   closeout    a margin call fires when equity < closeout x maintenance (OANDA closes out at half the margin used)
+# Shares also pay TAXES and, when US-listed, the SEC fee and FINRA TAF on sales. Bought options are paid in full.
+# US shorts carry FINRA 4210(c)'s per-share minimums.
+STOCK = {"long": (0.50, 0.25), "short": (0.50, 0.30)}  # Reg T 50%; FINRA 4210 25% long, 30% short (Schwab's own too)
+CASH = {"long": (1.0, 1.0)}
+STOCK_MARKETS = {"us", "london", "europe", "tokyo", "hongkong"}
+US_SHORT_TIERS = ((5.0, 2.50, 1.00), (math.inf, 5.00, 0.30))  # FINRA 4210(c): price below, $/share minimum, rate
+FX_MAJORS = {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "SEK", "NOK", "DKK"}  # NFA's 2% list
+SUFFIX_MARKET = {"L": "london", "DE": "europe", "PA": "europe", "AS": "europe", "MI": "europe", "MC": "europe",
+                 "T": "tokyo", "HK": "hongkong"}
+# Transaction taxes by listing, bps on (buys, sells): UK SDRT 0.5%; French FTT 0.4% (large caps); Italian FTT 0.2%
+# (from 2026); Spanish FTT 0.2%; Hong Kong stamp duty 0.1% plus SFC, AFRC and HKEX levies, each side
+TAXES = {"L": (50, 0), "PA": (40, 0), "MI": (20, 0), "MC": (20, 0), "HK": (10.565, 10.565)}
+TAF_SHARE, TAF_CAP, TAF_FREE = 0.000195, 9.79, ("2026-10-01", "2027-01-01")  # FINRA TAF on sales; $0 in Q4 2026
+TAF_CONTRACT, ORF = 0.00329, 0.015  # options: TAF per contract sold; exchanges' regulatory fee per contract (~1.2-2.2c)
+# Rates for markets an account doesn't list (positions from an older book), and the generic account's
+FALLBACK = {m: STOCK for m in STOCK_MARKETS} | {"crypto": {"long": (0.50, 0.50), "short": (0.50, 0.50)},
+                                              "fx_major": {"long": (0.02, 0.02), "short": (0.02, 0.02)},
+                                              "fx": {"long": (0.05, 0.05), "short": (0.05, 0.05)}}
+# Schwab: base rate 10.25% (from 18 Sep 2026) plus a spread by debit tier; nothing on debits under $100; $500k+ isn't
+# published, so it keeps the $250k tier's rate
+SCHWAB_DEBIT = ((100, 0.0), (25e3, 12.075), (50e3, 11.575), (100e3, 10.625), (250e3, 10.575), (math.inf, 10.325))
+IBKR_BM = 3.88  # IBKR's USD benchmark, 10 Nov 2026; Pro rates are BM + 1.5% / 1% / 0.75% by slice of the debit
+IBKR_DEBIT = ((100e3, IBKR_BM + 1.5), (1e6, IBKR_BM + 1.0), (math.inf, IBKR_BM + 0.75))
+IBKR_FOREIGN = {"long": (0.50, 0.30), "short": (0.50, 0.30)}  # Reg T in a US account; IBKR's house rates unpublished
+_schwab = {"whole": True, "options": True, "fees": {"us": (0.0, 0.0, 0.0, 0.0)}, "option_fee": 0.65, "credit": 0.05}
+VENDORS = {
+    "schwab": {"label": "Charles Schwab", "accounts": {
+        "margin": dict(_schwab, label="Margin", markets={"us": STOCK}, min_equity=2000.0, intraday=0.25,
+                       low_price=3.0, debit=SCHWAB_DEBIT),
+        "cash": dict(_schwab, label="Cash (T+1 settled cash)", markets={"us": CASH}, settle=1),
+        "ira": dict(_schwab, label="IRA (limited margin: no shorts, no borrowing)", markets={"us": CASH},
+                    limited_min=25000.0),
+    }},
+    "ibkr": {"label": "Interactive Brokers", "accounts": {
+        # Pro Fixed: US $0.005/share ($1 min, 1% max); abroad 0.05% (min GBP/EUR 3) or 0.08% (Tokyo JPY 80, Hong
+        # Kong HKD 18), each plus ~0.03% to convert the dollars; easy-to-borrow shorts ~0.25%/yr
+        "margin": {"label": "Margin (IBKR Pro)", "options": True, "min_equity": 2000.0, "intraday": 0.25, "pdt_min": 25000.0,
+                   "markets": {"us": STOCK} | {m: IBKR_FOREIGN for m in STOCK_MARKETS - {"us"}}, "option_fee": 0.65,
+                   "fees": {"us": (0.005, 0.0, 1.0, 1.0), "london": (0.0, 8.0, 4.0, 0.0), "europe": (0.0, 8.0, 3.5, 0.0),
+                            "tokyo": (0.0, 11.0, 0.55, 0.0), "hongkong": (0.0, 11.0, 2.3, 0.0)},
+                   "carry": {m: {"short": 0.25} for m in STOCK_MARKETS},
+                   "debit": IBKR_DEBIT, "blended": True, "credit": IBKR_BM - 0.5, "credit_min": 10e3,
+                   "credit_nav": 100e3},
+        "ira": {"label": "IRA (limited margin: no shorts, no borrowing)", "options": True,
+                "markets": {m: CASH for m in STOCK_MARKETS}, "option_fee": 0.65,
+                "fees": {"us": (0.005, 0.0, 1.0, 1.0), "london": (0.0, 8.0, 4.0, 0.0), "europe": (0.0, 8.0, 3.5, 0.0),
+                         "tokyo": (0.0, 11.0, 0.55, 0.0), "hongkong": (0.0, 11.0, 2.3, 0.0)},
+                "credit": IBKR_BM - 0.5, "credit_min": 10e3, "credit_nav": 100e3},
+    }},
+    "coinbase": {"label": "Coinbase", "accounts": {
+        # Advanced spot, lowest tier: 0.90% taker (market and stop orders take). No margin or shorts on spot.
+        "spot": {"label": "Spot (cash)", "markets": {"crypto": CASH}, "lot": {"crypto": 1e-8},
+                 "fees": {"crypto": (0.0, 90.0, 0.0, 0.0)}},
+        # Coinbase Financial Markets (FCM) on Coinbase Derivatives: perps on every coin here but TRX; 10% intraday,
+        # 20% overnight margin (swing trades are held overnight); ~0.05% a side with a $0.15 minimum; funding is
+        # hourly, longs paying when positive (10%/yr is an assumption, not a published average)
+        # contract sizes: BTC 0.01 (CFTC filing #2025-32); ETH 0.1, SOL 5, XRP 500 from Coinbase help pages and
+        # press (unconfirmed); the other coins' sizes are unknown here (the live adapter reads them from Coinbase)
+        "perps": {"label": "US perpetual-style futures", "lot": {"crypto": 1e-4},
+                  "lot_symbol": {"BTC-USD": 0.01, "ETH-USD": 0.1, "SOL-USD": 5.0, "XRP-USD": 500.0},
+                  "markets": {"crypto": {"long": (0.20, 0.20), "short": (0.20, 0.20)}},
+                  "only": {"crypto": {f"{c}-USD" for c in "BTC ETH SOL XRP BNB ADA DOGE AVAX LINK LTC BCH DOT XLM HBAR".split()}},
+                  "fees": {"crypto": (0.0, 5.0, 0.15, 0.0)}, "carry": {"crypto": {"long": 10.0, "short": -10.0}}},
+    }},
+    "oanda": {"label": "OANDA", "accounts": {
+        # NFA security deposits (OANDA: 3% on AUD pairs); standard spread-only pricing (EURUSD 1.4 pips ...: half the
+        # spread a fill, in bps); financing is the tom-next differential +- a 1% admin fee (only the fee is modelled);
+        # everything closes out once equity is down to half the margin used. NFA FIFO, no hedging: one position a pair.
+        "fx": {"label": "Forex (NFA: 50:1 majors, 20:1 others)", "whole": True, "closeout": 0.5,
+               "markets": {"fx_major": {"long": (0.02, 0.02), "short": (0.02, 0.02)},
+                           "fx": {"long": (0.05, 0.05), "short": (0.05, 0.05)}},
+               "symbol": {"AUDUSD=X": (0.03, 0.03)},
+               "fees": {"fx_major": (0.0, 0.8, 0.0, 0.0), "fx": (0.0, 2.7, 0.0, 0.0),
+                        "EURUSD=X": (0.0, 0.65, 0.0, 0.0), "USDJPY=X": (0.0, 0.47, 0.0, 0.0),
+                        "GBPUSD=X": (0.0, 0.79, 0.0, 0.0), "AUDUSD=X": (0.0, 1.06, 0.0, 0.0),
+                        "USDCAD=X": (0.0, 0.8, 0.0, 0.0), "USDCHF=X": (0.0, 1.0, 0.0, 0.0),
+                        "NZDUSD=X": (0.0, 1.4, 0.0, 0.0), "USDMXN=X": (0.0, 2.7, 0.0, 0.0)},
+               "carry": {"fx_major": {"long": 1.0, "short": 1.0}, "fx": {"long": 1.0, "short": 1.0}}},
+    }},
+    "generic": {"label": "Generic", "accounts": {
+        "margin": {"label": "US margin account, any market (older books)", "markets": FALLBACK, "options": True},
+    }},
+}
+
+
+def rules_of(book):
+    """The book's account rules: VENDORS[vendor]["accounts"][account] (older books: the generic margin account)."""
+    st = book["settings"]
+    return VENDORS[st.get("vendor", "generic")]["accounts"][st.get("account", "margin")]
+
+
+def market_of(symbol):
+    """The market of a Yahoo symbol: BTC-USD crypto, EURUSD=X FX, SHEL.L London ..., else US."""
+    s = symbol.upper()
+    if s.endswith("=X"):
+        pair = s[:-2]
+        pair = pair if len(pair) == 6 else "USD" + pair  # Yahoo's JPY=X is USDJPY
+        return "fx_major" if {pair[:3], pair[3:]} <= FX_MAJORS else "fx"
+    if "-" in s and s.rsplit("-", 1)[1] in ("USD", "USDT", "USDC", "EUR", "GBP"):
+        return "crypto"
+    return SUFFIX_MARKET.get(s.rsplit(".", 1)[1] if "." in s else "", "us")
+
+
+def refusal(rules, symbol, side, kind="stock"):
+    """Why this account can't open the trade, or None."""
+    if kind == "option":
+        return None if rules.get("options") else "this account doesn't trade options"
+    sym, mkt = symbol.upper(), market_of(symbol)
+    if mkt not in rules["markets"] or sym not in rules.get("only", {}).get(mkt, {sym}):
+        return f"this account doesn't trade {sym} ({mkt})"
+    if side not in rules["markets"][mkt]:
+        return "no short sales in this account"
+    return None
+
+
+def lot_of(rules, symbol):
+    """Smallest tradable size: 1 for whole shares or units, the symbol's contract size, the account's lot for the
+    market, or None (any size)."""
+    if rules.get("whole"):
+        return 1
+    return rules.get("lot_symbol", {}).get(symbol.upper()) or rules.get("lot", {}).get(market_of(symbol))
+
+
+def requirement(x, price, initial=False, rules=None):
+    """Equity a position (or an order, as if filled) must keep behind it at `price`, in cash, under the account's
+    rules: maintenance, or with initial=True what it takes to open (never less than maintenance)."""
+    if x["kind"] == "option":
+        return x["qty"] * price * x.get("mult", 100)
+    rules = rules or VENDORS["generic"]["accounts"]["margin"]
+    sym, side, mkt = x["symbol"].upper(), x["side"], market_of(x["symbol"])
+    init, maint = rules.get("symbol", {}).get(sym) or (rules["markets"].get(mkt) or FALLBACK[mkt]).get(side) \
+        or FALLBACK[mkt][side]
+    day = bool(x.get("flatten"))
+    if mkt in STOCK_MARKETS and side == "long" and price < (rules.get("low_price") or 0):
+        init = maint = 1.0
+    elif day and side == "long" and rules.get("intraday") and maint < 1:
+        maint = rules["intraday"]
+    req = maint * price
+    if mkt in STOCK_MARKETS and side == "short":
+        req = max(req, next(max(per_share, rate * price) for top, per_share, rate in US_SHORT_TIERS if price < top))
+    if initial and not day:
+        req = max(req, init * price)
+    return x["qty"] * req
+
+
+def margin_req(book, initial=False):
+    """The account's margin requirement at the marks (maintenance, or initial)."""
+    rules = rules_of(book)
+    return sum(requirement(p, p.get("mark", p["entry_price"]), initial, rules) for p in book["positions"])
+
+
+def stop_stress(book):
+    """(loss, requirement) if every open position and working entry hit its stop at once: the loss is open_risk, the
+    requirement is each one's maintenance at its stop price (bought options at zero; no stop: at the mark)."""
+    rules, req = rules_of(book), 0.0
+    for x in book["positions"] + [o for o in book["orders"] if o["status"] == "working"]:
+        if x["kind"] == "option":
+            continue
+        px = x.get("stop") or x.get("mark") or x.get("entry_price") or x["entry"].get("price") or x.get("ref_px") or 0.0
+        req += requirement(x, px, rules=rules)
+    return open_risk(book), req
+
+
+def _upnl(p):
+    """Open P&L before fees."""
+    sgn = 1 if p["side"] == "long" else -1
+    return sgn * (p.get("mark", p["entry_price"]) - p["entry_price"]) * p["qty"] * p.get("mult", 1)
+
+
+def debit_balance(book):
+    """Cash borrowed to carry long positions: cash short of what the shorts are marked at (their proceeds are held
+    against them, not lent out). Negative: a credit balance."""
+    return sum(p["qty"] * p.get("mark", p["entry_price"]) for p in book["positions"] if p["side"] == "short") - book["cash"]
+
+
+def _business_days_after(ts, n):
+    d = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date()
+    while n > 0:
+        d += dt.timedelta(days=1)
+        n -= d.weekday() < 5
+    return dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc).timestamp()
+
+
+def settled_cash(book, t=None):
+    """Cash a cash account may spend now: its cash less sale proceeds that haven't settled yet."""
+    t = t or dt.datetime.now(dt.timezone.utc).timestamp()
+    book["unsettled"] = [u for u in book.get("unsettled", []) if u[0] > t]
+    return book["cash"] - sum(a for _, a in book["unsettled"])
+
+
+def accrue_interest(book, t):
+    """From the last accrual to t, at today's balances: margin interest on a debit (360-day year), interest on a credit
+    balance (365), and the carry on positions held (FX financing, perp funding). A book from before interest starts its
+    clock now, and so does a replay stepping through dates before the book was made."""
+    t0, book["accrued_to"] = book.get("accrued_to"), t
+    if t0 is None or t <= t0:
+        return 0.0
+    rules, days, debit = rules_of(book), (t - t0) / 86400, debit_balance(book)
+    if debit > 0 and rules.get("debit"):
+        if rules.get("blended"):  # each slice of the debit at its own tier's rate
+            lo, cost = 0.0, 0.0
+            for top, r in rules["debit"]:
+                cost += max(0.0, min(debit, top) - lo) * r
+                lo = top
+        else:
+            cost = debit * next(r for top, r in rules["debit"] if debit < top)
+        amt = -cost / 100 * days / 360
+    else:
+        nav = min(1.0, equity_of(book) / rules["credit_nav"]) if rules.get("credit_nav") else 1.0
+        amt = max(0.0, -debit - rules.get("credit_min", 0.0)) * rules.get("credit", 0.0) * nav / 100 * days / 365
+    for p in book["positions"]:
+        c = rules.get("carry", {}).get(market_of(p["symbol"]), {}).get(p["side"])
+        if c:
+            amt -= abs(p["qty"] * p.get("mark", p["entry_price"])) * c / 100 * days / 365
+    book["cash"] += amt
+    book["interest"] = book.get("interest", 0.0) + amt
+    return amt
+
+
+def margin_call(book, ts, events):
+    """A broker's real-time margin check: when equity falls below the maintenance requirement (times the account's
+    closeout level), cancel the working entries and close positions, biggest loser first, at the mark (plus slippage;
+    options near the bid) until the equity left covers what is still open. Returns the closed trades."""
+    k = rules_of(book).get("closeout", 1.0)
+    eq, req = equity_of(book), margin_req(book)
+    if eq >= k * req or not book["positions"]:
+        return []
+    events.append(f"margin call: equity {eq:,.0f} is below the {k * req:,.0f} maintenance requirement")
+    for o in book["orders"]:
+        if o["status"] == "working":
+            o["status"] = "cancelled"
+            events.append(f"#{o['id']} cancelled (margin call)")
+    out_ = []
+    while book["positions"] and equity_of(book) < k * margin_req(book):
+        p = min(book["positions"], key=_upnl)
+        mark = p.get("mark", p["entry_price"])
+        px = mark * 0.98 if p["kind"] == "option" else mark * (1 + (-1 if p["side"] == "long" else 1) * _slip(book, p))
+        tr = _close(book, p, px, ts, "margin call")
+        events.append(f"#{p['id']} margin call: out at {px:,.4g}, {tr['pnl']:+,.2f}"
+                      + (f" ({tr['R']:+.2f}R)" if tr["R"] is not None else ""))
+        out_.append(tr)
+    return out_
+
+
 def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="market", stop=None, target=None,
                 target_r=None, flatten=None, tif="day", setup="", note="", right=None, strike=None, expiry=None,
                 trigger="underlying", iv=None, now=None, price=None, tzname=None, force=False, quote=None,
                 slippage_bps=None):
     """Validate, size and record a bracket order (filling a market order at once when a price is known).
     slippage_bps overrides the book's slippage for this order and the position it opens (one book trading both
-    liquid ETFs and thin small caps). Returns (order, notes). Raises ValueError when the order breaks a rule."""
+    liquid ETFs and thin small caps). The account's rules (rules_of) decide what it may trade, in what sizes, and the
+    margin. Returns (order, notes). Raises ValueError when the order breaks a rule."""
     symbol = symbol.upper()
     notes = []
     st = book["settings"]
@@ -245,6 +553,34 @@ def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="marke
             raise ValueError(f"buying power: {gross + qty * ref:,.0f} of positions vs {eq * st['bp']:,.0f} allowed ({st['bp']:g}x)")
     elif qty * prem * mult > book["cash"]:
         raise ValueError(f"not enough cash for {qty} contracts at {prem:.2f}")
+    rules = rules_of(book)
+    why = refusal(rules, symbol, side, kind)
+    if why:
+        raise ValueError(why)
+    lot = lot_of(rules, symbol)
+    if flatten and rules.get("pdt_min") and eq < rules["pdt_min"] and day_trades_5d(book) >= 3:
+        raise ValueError(f"pattern-day-trader rule: a 4th day trade in five business days needs "
+                         f"{rules['pdt_min']:,.0f} of equity at this broker; the account has {eq:,.0f}")
+    if kind == "stock" and lot and abs(qty / lot - round(qty / lot)) > 1e-6:
+        raise ValueError(f"{qty:g} {symbol}: this account trades " + ("whole units only" if lot == 1 else f"in steps of {lot:g}"))
+    x = {"kind": kind, "symbol": symbol, "side": side, "qty": qty, "flatten": flatten, "mult": mult}
+    need = requirement(x, prem if kind == "option" else ref, initial=True, rules=rules)
+    if kind == "stock" and eq < rules.get("min_equity", 0.0):
+        if side == "short":
+            raise ValueError(f"margin: short sales need {rules['min_equity']:,.0f} of equity (FINRA 4210(b)); "
+                             f"the account has {eq:,.0f}")
+        need = max(need, qty * ref)  # no margin under the minimum: paid in full
+    if side == "long" and (rules.get("settle") or eq < rules.get("limited_min", 0.0)):
+        cash_ok = settled_cash(book, t_now)  # a cash account (or an IRA under limited margin's minimum) buys with
+        cost = qty * (prem * mult if kind == "option" else ref)  # settled cash only: no good-faith violations
+        if cost > cash_ok:
+            raise ValueError(f"settled cash: this buy costs {cost:,.0f} and {max(0.0, cash_ok):,.0f} has settled "
+                             "(sale proceeds settle T+1)")
+    held = margin_req(book, initial=True)
+    if held + need > eq:  # short-sale proceeds sit in cash but are not equity: they can't pay for this
+        raise ValueError(f"margin: this order needs {need:,.0f} of equity behind it ({rules['label']}) and "
+                         f"{max(0.0, eq - held):,.0f} is free ({held:,.0f} of the {eq:,.0f} equity backs open "
+                         "positions); --force does not lift margin")
     oid = book["next_id"]
     book["next_id"] += 1
     o = {"id": oid, "symbol": symbol, "kind": kind, "side": side, "qty": qty, "entry": en, "stop": stop,
@@ -274,7 +610,7 @@ def _desc(o):
 
 def _open_position(book, o, fill, ts, und):
     mult = o.get("mult", 1)
-    fees = _fees(book, o["kind"], o["qty"], fill, o["side"] == "short", mult)
+    fees = _fees(book, o, o["qty"], fill, o["side"] == "short", ts)
     if o["side"] == "long":
         book["cash"] -= o["qty"] * fill * mult + fees
     else:
@@ -294,9 +630,12 @@ def _open_position(book, o, fill, ts, und):
 
 def _close(book, p, price, ts, reason):
     mult = p.get("mult", 1)
-    fees = _fees(book, p["kind"], p["qty"], price, p["side"] == "long", mult)
+    fees = _fees(book, p, p["qty"], price, p["side"] == "long", ts)
     if p["side"] == "long":
         book["cash"] += p["qty"] * price * mult - fees
+        if rules_of(book).get("settle"):  # a cash account's sale proceeds settle later
+            book.setdefault("unsettled", []).append([_business_days_after(ts, rules_of(book)["settle"]),
+                                                     p["qty"] * price * mult - fees])
         gross = (price - p["entry_price"]) * p["qty"] * mult
     else:
         book["cash"] -= p["qty"] * price + fees
@@ -439,7 +778,7 @@ def _step(book, sym, bar, secs, tzname, events):
 def update_book(book, bars_for=None, now=None):
     """Advance the book to `now`: process every completed bar since the last update, then mark to market."""
     t_now = now or dt.datetime.now(dt.timezone.utc).timestamp()
-    events = []
+    events, feed = [], []
     syms = sorted({o["symbol"] for o in book["orders"] if o["status"] == "working"} | {p["symbol"] for p in book["positions"]})
     for sym in syms:
         items = [o["created"] for o in book["orders"] if o["symbol"] == sym and o["status"] == "working"] + \
@@ -450,14 +789,19 @@ def update_book(book, bars_for=None, now=None):
         except Exception as e:  # noqa: BLE001
             events.append(f"{sym}: no bars ({e})")
             continue
-        last = book["cursor"].get(sym, 0)
-        for bar in rows:
-            if bar[0] <= last or bar[0] + secs > t_now:
-                continue  # already processed, or still forming
-            _step(book, sym, bar, secs, tzname, events)
-            book["cursor"][sym] = bar[0]
+        last = book["cursor"].get(sym, 0)  # skip bars already processed, or still forming
+        feed += [(bar[0], sym, bar, secs, tzname) for bar in rows if last < bar[0] and bar[0] + secs <= t_now]
+    # every symbol's bars in time order, so margin is checked on the whole account as it stood at each moment
+    feed.sort(key=lambda x: (x[0], x[1]))
+    for i, (ts, sym, bar, secs, tzname) in enumerate(feed):
+        _step(book, sym, bar, secs, tzname, events)
+        book["cursor"][sym] = ts
+        if i + 1 == len(feed) or feed[i + 1][0] != ts:
+            margin_call(book, ts + secs, events)
     if bars_for is None:
         _mark_live(book)
+        margin_call(book, t_now, events)
+    accrue_interest(book, t_now)
     book["equity"].append([t_now, equity_of(book)])
     book["last_update"] = t_now
     for e in events:
@@ -499,8 +843,7 @@ def status(book):
     pos = []
     for p in book["positions"]:
         mark = p.get("mark", p["entry_price"])
-        sgn = 1 if p["side"] == "long" else -1
-        upnl = sgn * (mark - p["entry_price"]) * p["qty"] * p.get("mult", 1) - p["fees"]
+        upnl = _upnl(p) - p["fees"]
         pos.append({"id": p["id"], "contract": _desc(p), "symbol": p["symbol"], "kind": p["kind"], "side": p["side"],
                     "qty": p["qty"], "entry": p["entry_price"], "mark": mark, "mark_src": p.get("mark_src", "last bar"),
                     "upnl": upnl, "R": upnl / p["risk_cash"] if p.get("risk_cash") else None, "stop": p.get("stop"),
@@ -517,17 +860,31 @@ def status(book):
     heat = open_risk(book)
     stats = {"n": len(tr), "win": sum(1 for t in tr if t["pnl"] > 0) / len(tr) if tr else None,
              "exp_R": sum(rs) / len(rs) if rs else None, "pnl": realized}
+    s_loss, s_req = stop_stress(book)
+    margin = {"maint": margin_req(book), "init": margin_req(book, initial=True), "stress_loss": s_loss,
+              "stress_req": s_req, "calls": sum(1 for t in tr if t["reason"] == "margin call"),
+              "debit": max(0.0, debit_balance(book)), "interest": book.get("interest", 0.0),
+              "settled": settled_cash(book) if rules_of(book).get("settle") else None}
+    st_ = book["settings"]
+    account = {"vendor": st_.get("vendor", "generic"), "account": st_.get("account", "margin"),
+               "vendor_label": VENDORS[st_.get("vendor", "generic")]["label"], "label": rules_of(book)["label"]}
+    margin.update(excess=eq - margin["init"], cushion=eq - margin["maint"], stress_cushion=eq - s_loss - s_req)
     started = label(book["created"])[:10]
-    bl = f"The paper account is at {eq:,.0f} ({eq / start - 1:+.2%} since {started})."
+    put_in = start + deposits_of(book)  # what went into the account: P&L and returns are measured on it
+    bl = f"The paper account is at {eq:,.0f} ({eq / put_in - 1:+.2%} since {started}" +         (f", with {deposits_of(book):,.0f} deposited)." if book.get("deposits") else ").")
     bl += f" {len(pos)} open position{'s' if len(pos) != 1 else ''}" + (f" risking {heat / eq:.1%} of equity" if pos or orders else "")
     bl += f", {len(orders)} working order{'s' if len(orders) != 1 else ''}."
+    if pos:
+        bl += (f" Margin: {margin['maint']:,.0f} maintenance, {margin['cushion']:,.0f} above a margin call"
+               + (" -- every stop hit at once would trigger one." if margin["stress_cushion"] < 0 else "."))
     if tr:
         bl += (f" {len(tr)} closed trade{'s' if len(tr) != 1 else ''}: {stats['win']:.0%} winners"
                + (f", {stats['exp_R']:+.2f}R per trade" if stats["exp_R"] is not None else "")
                + (" -- far too few to judge an edge (think 100-300+)." if len(tr) < 100 else "."))
-    return {"equity": eq, "cash": book["cash"], "start_equity": start, "total_pnl": eq - start, "total_ret": eq / start - 1,
+    return {"equity": eq, "cash": book["cash"], "start_equity": start, "deposits": deposits_of(book),
+            "total_pnl": eq - put_in, "total_ret": eq / put_in - 1,
             "realized": realized, "unrealized": unreal, "open_risk": heat, "heat_pct": heat / eq if eq else None,
-            "positions": pos, "orders": orders, "trades": tr[-100:][::-1], "equity_curve": book["equity"][-2000:],
+            "margin": margin, "account": account, "positions": pos, "orders": orders, "trades": tr[-100:][::-1], "equity_curve": book["equity"][-2000:],
             "day_trades_5d": day_trades_5d(book), "stats": stats, "bottom_line": bl, "settings": book["settings"],
             "last_update": label(book["last_update"]) if book.get("last_update") else None,
             "log": [[label(t), m] for t, m in book["log"][-30:]][::-1]}
@@ -574,7 +931,8 @@ def _replay(a):
 def cmd_init(a):
     if os.path.exists(a.book) and not a.force:
         sys.exit(f"{a.book} exists; pass --force to start over (the old book is overwritten)")
-    b = new_book(a.equity, a.commission_share, a.commission_contract, a.slippage_bps, a.bp, a.max_risk, a.max_heat)
+    b = new_book(a.equity, a.commission_share, a.commission_contract, a.slippage_bps, a.bp, a.max_risk, a.max_heat,
+                 vendor=a.vendor, account=a.account)
     save_book(b, a.book)
     print(f"  paper book {a.book}: {a.equity:,.0f} cash; risk cap {a.max_risk:g}%/trade, heat cap {a.max_heat:g}%, "
           f"buying power {a.bp:g}x, slippage {a.slippage_bps:g} bps, commissions {a.commission_share:g}/share, "
@@ -680,6 +1038,10 @@ def build():
     x.add_argument("--bp", type=float, default=4.0, help="buying power multiple for stock positions")
     x.add_argument("--max-risk", type=float, default=1.0, help="%% of equity one trade may risk")
     x.add_argument("--max-heat", type=float, default=6.0, help="%% of equity all open trades may risk")
+    x.add_argument("--vendor", default="generic", choices=sorted(VENDORS),
+                   help="whose account rules the book follows (margin, fees, interest, what it may trade)")
+    x.add_argument("--account", default="margin", help="the vendor's account type, e.g. schwab margin|cash|ira, "
+                   "ibkr margin, coinbase spot|perps, oanda fx")
     x.add_argument("--force", action="store_true")
     x.set_defaults(fn=cmd_init)
     x = s.add_parser("order", help="bracket order")

@@ -4,6 +4,9 @@
 
 Evidence tags: `[Strong]` `[Moderate]` `[Weak]` `[Contested]` `[Lore]`. Formulas marked *(identity)* are math, not empirical claims.
 
+Per-structure playbooks for the 11 classic strategies (legs, payoff, Greeks, entry and exit rules, return evidence,
+Schwab levels and margin) are in `options-strategies.md`; `tradekit.py strategy` prices any of them.
+
 ## Contents
 1. BSM and where it fails · 2. Greeks (incl. vanna, volga, charm) · 3. Gamma-theta and delta-hedged P&L ·
 4. Expected move from straddles · 5. Volatility surface · 6. Volatility risk premium ·
@@ -259,8 +262,9 @@ VIX ≈ √(30-day variance swap rate), computed this way
 | Finding | Detail | Grade |
 |---|---|---|
 | Cboe PUT index vs S&P 500, Jul 1986 – Dec 2015 | 10.1% vs 9.8% per year; vol 10.1% vs 15.3%; Sharpe 0.67 vs 0.47 (Cboe-sponsored Bondarenko study; CXO summary) | [Moderate] |
-| PUT, BXM, CLL | About 30% lower vol than the S&P 500 (Cboe-commissioned; Wilshire 2016 covers 1986–2016) | [Moderate] |
-| Conflicts and limits | Exchange-commissioned; results depend heavily on start and end dates; lags strong bull markets; no independent post-2020 net-of-cost study found | caveat |
+| Cboe PUT since Jan 2007 | 7.1% vs 11.0% per year for the S&P 500 TR to Oct 2026; vol 10.7% vs 15.4%; Sharpe 0.52 vs 0.61 (Cboe factsheet, 31 Oct 2026). The 1986–2015 outperformance did not persist | [Moderate] |
+| PUT, BXM vol | About 30% lower than the S&P 500 (10.6–10.7% vs 15.2–15.4%, Cboe factsheets to Oct 2026). Wilshire 2016 (BXM, BXMD, CLLZ, PPUT, PUT; not CLL) reported only that max drawdowns were 24% lower on average | [Moderate] |
+| Conflicts and limits | Exchange-commissioned; results depend heavily on start and end dates; lags strong bull markets; no independent post-2020 net-of-cost study found. Calendar years 2008–2026 and the BXM, PPUT, CNDR and BFLY records are in `options-strategies.md` §3, §6-§8, §11 | caveat |
 | Covered call decomposed (Israelov & Nielsen 2015) | Long equity + short vol + an uncompensated equity-reversal (delta-timing) exposure. Delta-hedging the short call raises Sharpe and cuts downside beta. Authors were AQR managers (disclosed) | [Moderate] |
 | Protective puts (Israelov 2019, "Pathetic Protection") | Reduce drawdowns less efficiently than holding less equity, because of the VRP cost | [Moderate] |
 
@@ -453,6 +457,7 @@ Expected |event move| ≈ 0.8 × event SD
 - `iv --price --S --K --days --kind` gives implied vol, implied daily move, and the 1-SD move to expiry. Use it for skew, parity checks and event-expiry IV. `--r` defaults to 0.04, so set it.
 - `move --S --days --vol` gives 1/2 SD and the expected |move|. `--straddle` gives the implied SD (×1.25) and approximate IV. `--event-vol --base-vol` gives the event-day SD, using the calendar-day convention.
 - `vol FILE` gives realized-vol estimators (Yang-Zhang, EWMA, etc.) for the ex-ante VRP.
+- `strategy NAME --S --days --vol [--strikes --px --ivs --rv --short --leg ...]` prices a multi-leg structure (11 presets or custom legs): payoff, max gain/loss, break-evens, Greeks now / IV+5 / halfway, P(profit) and expected P&L at a realized-vol forecast, Schwab level, cash or FINRA margin, and a spot × time × IV scenario grid.
 - `size` (`--multiplier 100`, entry = max loss per share, stop 0) sizes defined-risk spreads by max loss. `expectancy` and `ruin` stress-test high-win-rate premium selling.
 - No toolkit command computes IVR/IVP, var-swap strikes or implied correlation. Use the formulas above with vendor data.
 

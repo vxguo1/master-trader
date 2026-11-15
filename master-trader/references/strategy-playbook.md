@@ -277,11 +277,13 @@ Treat these as strong upper bounds for today.
 | Evidence | Period | Result |
 |---|---|---|
 | CBOE PUT (Bondarenko) | 1986-2015, gross | 10.1%/yr vs S&P 500 TR 9.8%; vol 10.1% vs 15.3%; Sharpe 0.67 vs 0.47 [SECONDARY] |
+| CBOE PUT (Cboe factsheet) | Jan 2007-Oct 2026 | 7.1%/yr vs S&P 500 TR 11.0%; vol 10.7% vs 15.4%; Sharpe 0.52 vs 0.61 |
+| CBOE CNDR iron condor (Cboe data) | Aug 2015-Oct 2026, live | 1.1%/yr vs T-bills 2.2% (back-test 1986-2015: 7.1%) |
 | BXM (Callan) | 1988-2006 | 11.77%/yr, slightly above the S&P; monthly Sharpe 0.22 vs 0.16 (old data) |
 | BXM (Hewitt EnnisKnupp) | 1986-2012 | S&P-like return at much lower vol |
 | BXM-tracking ETPs | | Substantially underperform the index |
 
-Cboe itself notes that Sharpe ratios overstate these strategies because of negative skew. Teach put-writing as **equity beta with a different payoff shape**, not alpha. No 2022-2026 PUT/BXM calendar-year data were verified.
+Cboe itself notes that Sharpe ratios overstate these strategies because of negative skew. Teach put-writing as **equity beta with a different payoff shape**, not alpha. Cboe calendar-year data (`options-strategies.md` §3, §6-§7): PUT −7.7% in 2022 vs −18.1% for the S&P 500 TR, then +14.3%, +17.8% and +9.2% in 2023-25 against +26.3%, +25.0% and +17.9%; BXM 8.6% vs 11.2% a year, 1986-Oct 2026.
 
 **Crash record**
 - **5 Feb 2018 (Volmageddon):** VIX 17.31 to 37.32 (+116%) in one session while the S&P fell 4.1%. Inverse-VIX ETP rebalancing amplified the move, and XIV fell about 96% and was terminated [SECONDARY for the 96%].
@@ -408,7 +410,7 @@ Sharpe figures are paper or index values for the stated period; gross unless mar
 | Size | Weak; only with a junk control | n/q | n/q | Long droughts | High in large caps, low in microcaps | Lagged in Q4 2025 |
 | Carry (multi-asset) | Bearers of recession and funding-crash risk | n/q | Negative | Global recessions, funding squeezes; all sleeves together | High in FX/bond futures | No 2026 data |
 | Stat arb / pairs / reversal | Impatient traders pay liquidity providers | 1.44 (1997-2007) falling to 0.9 (2003-07), after costs | Negative under crowding [inference] | Crowded deleveraging (Aug 2007); structural breaks | Low (high turnover, illiquid names) | Heavily decayed; no post-2010 peer-reviewed estimate |
-| Short vol / VRP | Hedgers buy insurance | 0.67 PUT vs 0.47 S&P (1986-2015, gross) [SECONDARY] | Strongly negative | Vol spikes (Feb 2018, Aug 2024); leverage and path | Medium; ETP crowding (~$100bn, Mar 2024) | Premium persists; no verified 2022-26 index data |
+| Short vol / VRP | Hedgers buy insurance | 0.67 PUT vs 0.47 S&P (1986-2015, gross) [SECONDARY] | Strongly negative | Vol spikes (Feb 2018, Aug 2024); leverage and path | Medium; ETP crowding (~$100bn, Mar 2024) | Premium persists; PUT 7.1% vs S&P 11.0%/yr since 2007, CNDR 1.1%/yr live 2015-26 |
 | Merger arb | Target holders shed break risk | ~4%/yr excess (1963-1998); n/q Sharpe | Negative (short-put-like) | Severe market declines; break clusters; regulation | Medium; inflows compress spreads | Strong 2025; 7.7% median spread (Aug 2025); 2026 compression risk |
 | PEAD / index / FOMC | Arbitraged away in liquid US names | Effectively ~0 net in large caps | n/a | n/a | n/a | Dead or contested; overlays only |
 | Crypto carry | Leveraged retail longs; scarce arbitrage capital | ~1.8 retail perp funding arb (earlier arXiv versions; unverified) | Negative (liquidation, exchange risk) | Margin spirals, ADL, exchange default | Low-medium; compresses as capital arrives | Funding sharply negative in Apr 2026 [SECONDARY] |
