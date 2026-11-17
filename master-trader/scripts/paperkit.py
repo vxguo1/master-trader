@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tradekit import bs, out  # noqa: E402
 
 DEFAULT_BOOK = os.environ.get("PAPER_BOOK", "paper_book.json")
+BOOK_VERSION = 2  # 2: an FX pair priced in another currency than dollars carries its dollar rate ("mult")
 R_FREE = 0.04
 SEC_FEE = 20.60e-6  # SEC Section 31 fee on sale proceeds (from 4 Apr 2026); FINRA TAF is $0 for Q4 2026
 YEAR = 365.25 * 86400
@@ -51,7 +52,7 @@ def new_book(equity, commission_share=0.0, commission_contract=0.65, slippage_bp
         raise ValueError(f"no {vendor} {account} account: choose from " + ", ".join(
             f"{v} {a}" for v, d in VENDORS.items() for a in d["accounts"]))
     t = dt.datetime.now(dt.timezone.utc).timestamp()
-    return {"version": 1, "created": t, "currency": currency, "start_equity": equity, "cash": equity,
+    return {"version": BOOK_VERSION, "created": t, "currency": currency, "start_equity": equity, "cash": equity,
             "settings": {"commission_share": commission_share, "commission_contract": commission_contract,
                          "slippage_bps": slippage_bps, "bp": bp, "max_risk_pct": max_risk_pct, "max_heat_pct": max_heat_pct,
                          "vendor": vendor, "account": account},
@@ -62,7 +63,41 @@ def load_book(path=DEFAULT_BOOK):
     if not os.path.exists(path):
         raise FileNotFoundError(f"no paper book at {path}: start one with `paperkit.py init --equity 100000`")
     with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+        book = json.load(fh)
+    upgrade_book(book)
+    return book
+
+
+def upgrade_book(book):
+    """Bring an older book up to BOOK_VERSION; returns what changed (also logged). Version 1 counted an FX pair's moves
+    in its quote currency as dollars (USDJPY's yen: 159x too much). Its open positions on such pairs get their dollar
+    rate at the entry ("mult") and the cash they moved is restated in dollars, so the equity holds only their dollar
+    P&L; working entries get the rate at their price and their planned risk restated. Closed trades and the interest
+    already charged stay as booked; a cross has no rate on file and stays as it was."""
+    if book.get("version", 1) >= BOOK_VERSION:
+        return []
+    notes = []
+    for x in book["positions"] + [o for o in book["orders"] if o["status"] == "working"]:
+        if x["kind"] != "stock" or x.get("mult", 1) != 1:
+            continue
+        px = x.get("entry_price") or x["entry"].get("price") or x.get("ref_px")
+        try:
+            m = quote_usd(x["symbol"], px) if px else 1.0
+        except ValueError:
+            continue
+        if m == 1:
+            continue
+        if "entry_price" in x:  # a position: restate the cash its fill moved, and its fees, in dollars
+            sgn = 1 if x["side"] == "long" else -1
+            fees = _fees(book, dict(x, mult=m), x["qty"], px, x["side"] == "short", x.get("entry_ts"))
+            book["cash"] += sgn * x["qty"] * px * (1 - m) + x.get("fees", 0.0) - fees
+            x.update(fees=fees, mfe=x.get("mfe", 0.0) * m, mae=x.get("mae", 0.0) * m)
+        x.update(mult=m, risk_cash=(x.get("risk_cash") or 0.0) * m)
+        notes.append(f"#{x['id']} {x['symbol']}: its P&L is now in dollars ({m:.6g} a unit of its price)")
+    book["version"] = BOOK_VERSION
+    for n in notes:
+        _log(book, f"book v{BOOK_VERSION}: {n}")
+    return notes
 
 
 def save_book(book, path=DEFAULT_BOOK):
@@ -202,7 +237,7 @@ def open_risk(book):
             r += p["qty"] * p.get("mark", p["entry_price"]) * p.get("mult", 100)
         elif p.get("stop") is not None:
             d = 1 if p["side"] == "long" else -1
-            r += max(0.0, d * (p.get("mark", p["entry_price"]) - p["stop"])) * p["qty"]
+            r += max(0.0, d * (p.get("mark", p["entry_price"]) - p["stop"])) * p["qty"] * p.get("mult", 1)
     return r + sum(o.get("risk_cash", 0.0) for o in book["orders"] if o["status"] == "working")
 
 
@@ -335,6 +370,24 @@ def market_of(symbol):
     return SUFFIX_MARKET.get(s.rsplit(".", 1)[1] if "." in s else "", "us")
 
 
+def quote_usd(symbol, price, rate=None):
+    """Dollars per unit of the currency a symbol is priced in: a position's "mult" for a stock-kind book entry. An FX
+    pair is priced in its quote currency (USDJPY in yen), so one unit moving 1.0 is worth 1/price dollars on USDXXX
+    (a unit is a dollar), 1 on XXXUSD, and `rate` (the quote currency's dollar rate) on a cross. 1 for anything that
+    isn't FX: foreign shares reach the book in dollars already."""
+    s = symbol.upper()
+    if not s.endswith("=X"):
+        return 1.0
+    pair = s[:-2] if len(s) == 8 else "USD" + s[:-2]  # Yahoo's JPY=X is USDJPY
+    if pair[3:] == "USD":
+        return 1.0
+    if pair[:3] == "USD":
+        return 1.0 / price
+    if rate:
+        return float(rate)
+    raise ValueError(f"{s} is a cross: its P&L is in {pair[3:]}, and there is no {pair[3:]}USD rate to convert it")
+
+
 def refusal(rules, symbol, side, kind="stock"):
     """Why this account can't open the trade, or None."""
     if kind == "option":
@@ -374,7 +427,7 @@ def requirement(x, price, initial=False, rules=None):
         req = max(req, next(max(per_share, rate * price) for top, per_share, rate in US_SHORT_TIERS if price < top))
     if initial and not day:
         req = max(req, init * price)
-    return x["qty"] * req
+    return x["qty"] * req * x.get("mult", 1)
 
 
 def margin_req(book, initial=False):
@@ -404,7 +457,8 @@ def _upnl(p):
 def debit_balance(book):
     """Cash borrowed to carry long positions: cash short of what the shorts are marked at (their proceeds are held
     against them, not lent out). Negative: a credit balance."""
-    return sum(p["qty"] * p.get("mark", p["entry_price"]) for p in book["positions"] if p["side"] == "short") - book["cash"]
+    return sum(p["qty"] * p.get("mark", p["entry_price"]) * p.get("mult", 1) for p in book["positions"]
+               if p["side"] == "short") - book["cash"]
 
 
 def _business_days_after(ts, n):
@@ -445,7 +499,7 @@ def accrue_interest(book, t):
     for p in book["positions"]:
         c = rules.get("carry", {}).get(market_of(p["symbol"]), {}).get(p["side"])
         if c:
-            amt -= abs(p["qty"] * p.get("mark", p["entry_price"])) * c / 100 * days / 365
+            amt -= abs(p["qty"] * p.get("mark", p["entry_price"]) * p.get("mult", 1)) * c / 100 * days / 365
     book["cash"] += amt
     book["interest"] = book.get("interest", 0.0) + amt
     return amt
@@ -479,11 +533,13 @@ def margin_call(book, ts, events):
 def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="market", stop=None, target=None,
                 target_r=None, flatten=None, tif="day", setup="", note="", right=None, strike=None, expiry=None,
                 trigger="underlying", iv=None, now=None, price=None, tzname=None, force=False, quote=None,
-                slippage_bps=None):
+                slippage_bps=None, fx_rate=None):
     """Validate, size and record a bracket order (filling a market order at once when a price is known).
     slippage_bps overrides the book's slippage for this order and the position it opens (one book trading both
-    liquid ETFs and thin small caps). The account's rules (rules_of) decide what it may trade, in what sizes, and the
-    margin. Returns (order, notes). Raises ValueError when the order breaks a rule."""
+    liquid ETFs and thin small caps). An FX pair's prices are in its quote currency and its P&L is converted to
+    dollars (quote_usd; a cross takes fx_rate, its quote currency's dollar rate, or looks it up live). The account's
+    rules (rules_of) decide what it may trade, in what sizes, and the margin. Returns (order, notes). Raises ValueError
+    when the order breaks a rule."""
     symbol = symbol.upper()
     notes = []
     st = book["settings"]
@@ -528,8 +584,13 @@ def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="marke
             t = max(0.0, (expiry_ts(expiry, tzname) - t_now) / YEAR)
             prem = bs(und, strike, t, R_FREE, 0.0, opt_iv, right)["price"] * 1.02
             notes.append(f"no live option quote: priced with the model at IV {opt_iv:.0%} plus 2% for the spread")
+    elif symbol.endswith("=X"):
+        pair = symbol[:-2]
+        if fx_rate is None and price is None and len(pair) == 6 and "USD" not in (pair[:3], pair[3:]):
+            fx_rate = live_quote(f"{pair[3:]}USD=X")["price"]
+        mult = quote_usd(symbol, ref, fx_rate)
     eq = equity_of(book)
-    per_unit = prem * mult if kind == "option" else (abs(ref - stop) if stop is not None else None)
+    per_unit = prem * mult if kind == "option" else (abs(ref - stop) * mult if stop is not None else None)
     if qty is None:
         if not risk_pct:
             raise ValueError("give --qty or --risk-pct")
@@ -548,9 +609,11 @@ def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="marke
     if heat > eq * st["max_heat_pct"] / 100 and not force:
         raise ValueError(f"total open risk would be {heat / eq:.1%} of equity, above the {st['max_heat_pct']:g}% cap")
     if kind == "stock":
-        gross = sum(p["qty"] * p.get("mark", p["entry_price"]) for p in book["positions"] if p["kind"] == "stock")
-        if gross + qty * ref > eq * st["bp"] and not force:
-            raise ValueError(f"buying power: {gross + qty * ref:,.0f} of positions vs {eq * st['bp']:,.0f} allowed ({st['bp']:g}x)")
+        gross = sum(p["qty"] * p.get("mark", p["entry_price"]) * p.get("mult", 1) for p in book["positions"]
+                    if p["kind"] == "stock")
+        if gross + qty * ref * mult > eq * st["bp"] and not force:
+            raise ValueError(f"buying power: {gross + qty * ref * mult:,.0f} of positions vs {eq * st['bp']:,.0f} "
+                             f"allowed ({st['bp']:g}x)")
     elif qty * prem * mult > book["cash"]:
         raise ValueError(f"not enough cash for {qty} contracts at {prem:.2f}")
     rules = rules_of(book)
@@ -569,10 +632,10 @@ def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="marke
         if side == "short":
             raise ValueError(f"margin: short sales need {rules['min_equity']:,.0f} of equity (FINRA 4210(b)); "
                              f"the account has {eq:,.0f}")
-        need = max(need, qty * ref)  # no margin under the minimum: paid in full
+        need = max(need, qty * ref * mult)  # no margin under the minimum: paid in full
     if side == "long" and (rules.get("settle") or eq < rules.get("limited_min", 0.0)):
         cash_ok = settled_cash(book, t_now)  # a cash account (or an IRA under limited margin's minimum) buys with
-        cost = qty * (prem * mult if kind == "option" else ref)  # settled cash only: no good-faith violations
+        cost = qty * (prem if kind == "option" else ref) * mult  # settled cash only: no good-faith violations
         if cost > cash_ok:
             raise ValueError(f"settled cash: this buy costs {cost:,.0f} and {max(0.0, cash_ok):,.0f} has settled "
                              "(sale proceeds settle T+1)")
@@ -590,6 +653,8 @@ def place_order(book, symbol, side="long", qty=None, risk_pct=None, entry="marke
         o["slippage_bps"] = float(slippage_bps)
     if kind == "option":
         o.update(right=right, strike=strike, expiry=expiry, mult=mult, iv=opt_iv, premium=prem)
+    elif mult != 1:
+        o["mult"] = mult  # an FX pair priced in another currency: dollars per unit of its price, until the fill
     book["orders"].append(o)
     _log(book, f"order #{oid}: {side} {qty} {_desc(o)} {en['type']}{' ' + str(en['price']) if en['price'] else ''}"
                f" stop {stop} target {target}", t_now)
@@ -609,12 +674,13 @@ def _desc(o):
 
 
 def _open_position(book, o, fill, ts, und):
-    mult = o.get("mult", 1)
-    fees = _fees(book, o, o["qty"], fill, o["side"] == "short", ts)
+    # an FX pair's dollars per unit of its price, at the fill (USDXXX: a unit is a dollar; a cross keeps the order's rate)
+    mult = o.get("mult", 1) if o["kind"] == "option" else quote_usd(o["symbol"], fill, o.get("mult") or 1)
+    fees = _fees(book, dict(o, mult=mult), o["qty"], fill, o["side"] == "short", ts)
     if o["side"] == "long":
         book["cash"] -= o["qty"] * fill * mult + fees
     else:
-        book["cash"] += o["qty"] * fill - fees
+        book["cash"] += o["qty"] * fill * mult - fees
     o["status"] = "filled"
     p = {k: o[k] for k in ("id", "symbol", "kind", "side", "qty", "stop", "target", "flatten", "setup", "note", "tz",
                            "trigger", "risk_cash", "slippage_bps") if k in o}
@@ -622,7 +688,7 @@ def _open_position(book, o, fill, ts, und):
     if o["kind"] == "option":
         p.update(right=o["right"], strike=o["strike"], expiry=o["expiry"], iv=o["iv"])
     if o["kind"] == "stock" and o.get("stop") is not None:
-        p["risk_cash"] = abs(fill - o["stop"]) * o["qty"]  # risk from the actual fill
+        p["risk_cash"] = abs(fill - o["stop"]) * o["qty"] * mult  # risk from the actual fill
     book["positions"].append(p)
     _log(book, f"filled #{o['id']} {o['side']} {o['qty']} {_desc(o)} at {fill:,.4g}", ts)
     return p
@@ -638,8 +704,8 @@ def _close(book, p, price, ts, reason):
                                                      p["qty"] * price * mult - fees])
         gross = (price - p["entry_price"]) * p["qty"] * mult
     else:
-        book["cash"] -= p["qty"] * price + fees
-        gross = (p["entry_price"] - price) * p["qty"]
+        book["cash"] -= p["qty"] * price * mult + fees
+        gross = (p["entry_price"] - price) * p["qty"] * mult
     pnl = gross - p["fees"] - fees
     risk = p.get("risk_cash") or 0.0
     tzn = p.get("tz")
@@ -759,9 +825,9 @@ def _step(book, sym, bar, secs, tzname, events):
                 p["mfe"] = max(p["mfe"], (fav - p["entry_price"]) * p["qty"] * p["mult"])
                 p["mae"] = min(p["mae"], (adv - p["entry_price"]) * p["qty"] * p["mult"])
             else:
-                sgn = 1 if p["side"] == "long" else -1
-                p["mfe"] = max(p["mfe"], sgn * (best - p["entry_price"]) * p["qty"])
-                p["mae"] = min(p["mae"], sgn * (worst - p["entry_price"]) * p["qty"])
+                sgn, m = (1 if p["side"] == "long" else -1), p.get("mult", 1)
+                p["mfe"] = max(p["mfe"], sgn * (best - p["entry_price"]) * p["qty"] * m)
+                p["mae"] = min(p["mae"], sgn * (worst - p["entry_price"]) * p["qty"] * m)
             p["mark"] = model_option(p, c, ts) if opt else c
             p["mark_ts"] = ts + secs
             p["und_last"] = c
