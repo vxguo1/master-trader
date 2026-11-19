@@ -958,8 +958,9 @@ def cmd_gpr(a):
 
 
 # --------------------------------------------------------------------------- SEC EDGAR fundamentals & earnings dates
-# data.sec.gov works with a generic User-Agent; the ticker->CIK file on www.sec.gov needs a contact address,
-# so common names are mapped here and SEC_USER_AGENT (e.g. "Jane Doe jane@example.org") unlocks the full lookup.
+# data.sec.gov and EDGAR's company search (efts.sec.gov) work with a generic User-Agent; the ticker->CIK file on
+# www.sec.gov needs a contact address. So common names are mapped here, any other ticker is looked up in the company
+# search, and SEC_USER_AGENT (e.g. "Jane Doe jane@example.org") also unlocks the ticker file.
 CIK_MAP = {"AAPL": 320193, "MSFT": 789019, "NVDA": 1045810, "AMZN": 1018724, "GOOGL": 1652044, "GOOG": 1652044,
            "META": 1326801, "TSLA": 1318605, "AVGO": 1730168, "BRK-B": 1067983, "JPM": 19617, "LLY": 59478,
            "V": 1403161, "UNH": 731766, "XOM": 34088, "MA": 1141391, "COST": 909832, "HD": 354950, "PG": 80424,
@@ -1001,12 +1002,29 @@ def sec_json(url):
         return json.loads(r.read().decode("utf-8"))
 
 
+def search_cik(ticker):
+    """The CIK whose listed tickers include `ticker` exactly, from EDGAR's company search (the search box on sec.gov),
+    or None. The search ranks partial matches too (ANT also finds ANTA), so only an exact ticker counts."""
+    t = ticker.upper()
+    js = sec_json("https://efts.sec.gov/LATEST/search-index?" + urllib.parse.urlencode({"keysTyped": t}))
+    for h in js.get("hits", {}).get("hits", []):
+        if t in [x.strip().upper() for x in (h.get("_source", {}).get("tickers") or "").split(",")]:
+            return int(h["_id"])
+    return None
+
+
 def resolve_cik(ticker, cik=None):
     if cik:
         return int(cik)
     t = ticker.upper()
     if t in CIK_MAP:
         return CIK_MAP[t]
+    try:
+        found = search_cik(t)
+    except (urllib.error.URLError, OSError, ValueError, KeyError):
+        found = None  # the search is down or changed: fall back to the ticker file
+    if found:
+        return found
     try:
         tab = sec_json("https://www.sec.gov/files/company_tickers.json")
         for row in tab.values():
@@ -1079,13 +1097,34 @@ def _num(v, fmt):
     return "n/a" if v is None else format(v, fmt)
 
 
+def no_facts_reason(cik, name=None):
+    """Why a company has no us-gaap facts, from its filing list: a new listing with no 10-Q or 10-K yet, or a foreign
+    issuer reporting under IFRS."""
+    try:
+        sub = sec_json(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+        rec = sub["filings"]["recent"]
+        forms, dates = rec["form"], rec["filingDate"]
+    except (urllib.error.URLError, OSError, ValueError, KeyError):
+        return f"no us-gaap facts for CIK {cik} (foreign filer or no XBRL)"
+    name = sub.get("name") or name or f"CIK {cik}"
+    foreign = [f for f in forms if f.startswith(("20-F", "40-F"))]
+    if foreign:
+        return f"{name} files {foreign[0]} as a foreign issuer (IFRS), so there are no us-gaap facts to read."
+    if not any(f.startswith(("10-Q", "10-K")) for f in forms):
+        last = f" Its latest filing is a {forms[0]} on {dates[0]}." if forms else ""
+        ipo = " (a new listing: its first 10-Q follows its first quarter-end)" if any(
+            f.startswith(("S-1", "F-1", "424B")) for f in forms) else ""
+        return f"{name} has filed no 10-Q or 10-K yet{ipo}, so there are no quarterly figures.{last}"
+    return f"{name}'s 10-Q and 10-K filings carry no us-gaap XBRL facts."
+
+
 def fundamentals(ticker, cik=None):
     """Quarterly rows (oldest first) with growth, margins, FCF and TTM sums, plus net cash and tags used."""
     cik = resolve_cik(ticker, cik)
     js = sec_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
     g = js.get("facts", {}).get("us-gaap", {})
     if not g:
-        sys.exit("no us-gaap facts (foreign filer or no XBRL)")
+        sys.exit(no_facts_reason(cik, js.get("entityName")))
     series, used = {}, {}
     for name, tags in FLOW_TAGS.items():
         p = _pick(g, tags, True)

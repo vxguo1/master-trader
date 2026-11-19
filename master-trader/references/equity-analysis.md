@@ -103,7 +103,10 @@ Response: raise the evidence bar and size down. Name the benign explanations (ra
   - Charges booked in COGS distort DIO. NVDA Q1 FY26 shows 59 days because of the $4.5bn H20 charge, against ~115 days in surrounding quarters.
   - Quarterly FCF% swings with working capital (NVDA 59.5% → 22.2% in one quarter). Use TTM.
 - **Not in the output:** segments, customer concentration, the non-operating split, purchase commitments. Read the 10-Q for those.
-- **Coverage.** About 45 large caps are in the built-in CIK map. Others need `--cik` or `SEC_USER_AGENT`.
+- **Coverage.** Any company that files 10-Qs and 10-Ks. About 45 large caps are in the built-in CIK map; any other ticker
+  is found through EDGAR's company search (efts.sec.gov, no contact address needed), then the SEC ticker file (needs
+  `SEC_USER_AGENT`), or pass `--cik`. A new listing has no figures until its first 10-Q, and a foreign issuer filing
+  20-F reports under IFRS, with no us-gaap facts: both say so.
 
 ### 2.5 EDGAR mechanics and pitfalls [V] (Pract)
 - **Endpoints** (no key; no CORS; declare a User-Agent with contact details; ≤ 10 requests/s):
